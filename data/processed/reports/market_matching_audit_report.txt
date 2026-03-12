@@ -1,0 +1,21 @@
+market_matching_audit_report
+total_market_rows=158604
+exact_matches=48759
+normalized_matches=32
+reversed_matches=48791
+ambiguous_rows=0
+unmatched_rows=61022
+top_unmatched_reasons
+reason=fighter_name_not_found count=32900
+reason=no_pre_fight_candidate_within_date_tolerance count=28122
+sample_unmatched_records
+sample=1 category=no_match reason=fighter_name_not_found source_event_id=0042929e4cd8bb58a587c10dec373cd3 sportsbook=BetOnline.ag event_date_utc=2025-01-19T01:00:00Z market_timestamp_utc=2024-12-31T23:55:01Z fighter_name=Jailton Almeida opponent_name=Sergey Spivak
+sample=2 category=no_match reason=fighter_name_not_found source_event_id=0042929e4cd8bb58a587c10dec373cd3 sportsbook=BetOnline.ag event_date_utc=2025-01-19T01:00:00Z market_timestamp_utc=2025-01-01T23:53:42Z fighter_name=Jailton Almeida opponent_name=Sergey Spivak
+sample=3 category=no_match reason=fighter_name_not_found source_event_id=0042929e4cd8bb58a587c10dec373cd3 sportsbook=BetOnline.ag event_date_utc=2025-01-19T01:00:00Z market_timestamp_utc=2025-01-02T23:54:47Z fighter_name=Jailton Almeida opponent_name=Sergey Spivak
+sample=4 category=no_match reason=fighter_name_not_found source_event_id=0042929e4cd8bb58a587c10dec373cd3 sportsbook=BetOnline.ag event_date_utc=2025-01-19T01:00:00Z market_timestamp_utc=2025-01-03T23:54:53Z fighter_name=Jailton Almeida opponent_name=Sergey Spivak
+sample=5 category=no_match reason=fighter_name_not_found source_event_id=0042929e4cd8bb58a587c10dec373cd3 sportsbook=BetOnline.ag event_date_utc=2025-01-19T01:00:00Z market_timestamp_utc=2025-01-04T23:54:22Z fighter_name=Jailton Almeida opponent_name=Sergey Spivak
+sample=6 category=no_match reason=fighter_name_not_found source_event_id=0042929e4cd8bb58a587c10dec373cd3 sportsbook=BetOnline.ag event_date_utc=2025-01-19T01:00:00Z market_timestamp_utc=2025-01-05T23:54:58Z fighter_name=Jailton Almeida opponent_name=Sergey Spivak
+sample=7 category=no_match reason=fighter_name_not_found source_event_id=0042929e4cd8bb58a587c10dec373cd3 sportsbook=BetOnline.ag event_date_utc=2025-01-19T01:00:00Z market_timestamp_utc=2025-01-06T23:54:50Z fighter_name=Jailton Almeida opponent_name=Sergey Spivak
+sample=8 category=no_match reason=fighter_name_not_found source_event_id=0042929e4cd8bb58a587c10dec373cd3 sportsbook=BetOnline.ag event_date_utc=2025-01-19T01:00:00Z market_timestamp_utc=2025-01-07T23:54:32Z fighter_name=Jailton Almeida opponent_name=Sergey Spivak
+sample=9 category=no_match reason=fighter_name_not_found source_event_id=0042929e4cd8bb58a587c10dec373cd3 sportsbook=BetOnline.ag event_date_utc=2025-01-19T01:00:00Z market_timestamp_utc=2025-01-08T23:53:29Z fighter_name=Jailton Almeida opponent_name=Sergey Spivak
+sample=10 category=no_match reason=fighter_name_not_found source_event_id=0042929e4cd8bb58a587c10dec373cd3 sportsbook=BetOnline.ag event_date_utc=2025-01-19T01:00:00Z market_timestamp_utc=2025-01-09T23:54:41Z fighter_name=Jailton Almeida opponent_name=Sergey Spivak

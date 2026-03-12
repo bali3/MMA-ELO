@@ -1,0 +1,81 @@
+"""Evaluation and calibration domain modules."""
+
+from evaluation.ablation import (
+    AblationConfig,
+    AblationExperimentResult,
+    AblationScenarioMetrics,
+    default_ablation_configs,
+    filter_ablation_configs,
+    run_ablation_experiments,
+)
+from evaluation.calibration import (
+    CalibrationBinSummary,
+    CalibrationDiagnosticsResult,
+    CalibrationMetrics,
+    PerformanceBreakdownRow,
+    compute_calibration_metrics,
+    run_calibration_diagnostics,
+)
+from evaluation.edge_analysis import (
+    SegmentComparisonRow,
+    SegmentedEdgeAnalysisResult,
+    run_segmented_edge_analysis,
+)
+from evaluation.model_selection import (
+    ChampionChallengerComparison,
+    ChampionChallengerMetric,
+    ModelComparisonResult,
+    ModelEvaluationSummary,
+    ModelPeriodSummary,
+    ModelRegistry,
+    ModelRegistryEntry,
+    compare_champion_vs_challenger,
+    compare_registered_models,
+    discover_model_registry,
+)
+from evaluation.walk_forward import (
+    BoutTimelineEntry,
+    CalibrationBin,
+    CalibrationSummary,
+    FoldMetrics,
+    WalkForwardEvaluationResult,
+    WalkForwardFold,
+    build_walk_forward_folds,
+    run_walk_forward_evaluation,
+)
+
+__all__ = [
+    "AblationConfig",
+    "AblationExperimentResult",
+    "AblationScenarioMetrics",
+    "CalibrationBinSummary",
+    "CalibrationDiagnosticsResult",
+    "BoutTimelineEntry",
+    "CalibrationBin",
+    "CalibrationMetrics",
+    "CalibrationSummary",
+    "FoldMetrics",
+    "PerformanceBreakdownRow",
+    "SegmentComparisonRow",
+    "SegmentedEdgeAnalysisResult",
+    "WalkForwardEvaluationResult",
+    "WalkForwardFold",
+    "build_walk_forward_folds",
+    "compute_calibration_metrics",
+    "run_calibration_diagnostics",
+    "ChampionChallengerComparison",
+    "ChampionChallengerMetric",
+    "ModelComparisonResult",
+    "ModelEvaluationSummary",
+    "ModelPeriodSummary",
+    "ModelRegistry",
+    "ModelRegistryEntry",
+    "compare_champion_vs_challenger",
+    "compare_registered_models",
+    "discover_model_registry",
+    "default_ablation_configs",
+    "filter_ablation_configs",
+    "run_ablation_experiments",
+    "run_segmented_edge_analysis",
+    "run_walk_forward_evaluation",
+]

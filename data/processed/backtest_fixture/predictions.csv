@@ -1,0 +1,5 @@
+model_run_id,model_name,model_version,bout_id,event_id,bout_datetime_utc,fighter_id,opponent_id,split,label,predicted_probability,feature_cutoff_utc
+run_fixture,elo_logistic,v1,bout_1,event_1,2024-01-01T01:00:00Z,fighter_a,fighter_b,test,1.0,0.55,2024-01-01T01:00:00Z
+run_fixture,elo_logistic,v1,bout_1,event_1,2024-01-01T01:00:00Z,fighter_b,fighter_a,test,0.0,0.45,2024-01-01T01:00:00Z
+run_fixture,elo_logistic,v1,bout_2,event_2,2024-02-01T01:00:00Z,fighter_c,fighter_d,test,0.0,0.53,2024-02-01T01:00:00Z
+run_fixture,elo_logistic,v1,bout_2,event_2,2024-02-01T01:00:00Z,fighter_d,fighter_c,test,1.0,0.47,2024-02-01T01:00:00Z

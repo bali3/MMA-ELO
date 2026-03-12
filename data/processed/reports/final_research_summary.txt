@@ -1,0 +1,354 @@
+MMA Research Workflow Final Summary
+generated_at_utc: 2026-03-12T22:48:09Z
+status: ok
+ingestion_mode: offline_snapshot
+
+Consolidated research summary:
+
+data_coverage:
+- bouts_count: 1869
+- events_count: 153
+- fighter_bout_stats_count: 3738
+- fighters_count: 992
+- first_ufc_bout_utc: 2022-07-23T00:00:00Z
+- last_ufc_bout_utc: 2026-03-14T00:00:00Z
+- markets_count: 455568
+- model_predictions_count: 15594
+- promotion: UFC
+- status: ok
+- ufc_bouts_count: 1869
+- ufc_completed_bouts_count: 1824
+- ufc_events_count: 153
+- ufc_market_rows_count: 455568
+
+data_coverage_audit:
+- completed_bouts_with_one_stats_row: 0
+- completed_bouts_with_two_stats_rows: 1824
+- completed_bouts_with_zero_stats_rows: 0
+- report_path: data/processed/reports/data_coverage_audit.txt
+- status: ok
+- total_completed_bouts: 1824
+- total_events: 153
+- total_fighter_bout_stats_rows: 3738
+- total_fighters: 992
+
+validation_results:
+- issues: 0
+- status: ok
+
+feature_coverage:
+- avg_key_feature_coverage: 0.80603115
+- bouts: 1869
+- earliest_bout_utc: 2022-07-23T00:00:00Z
+- latest_bout_utc: 2026-03-14T00:00:00Z
+- min_key_feature_coverage: 0.57758159
+- rows: 3738
+- status: ok
+
+market_coverage:
+- closing_odds_covered_fights: 1508
+- completed_fights: 1824
+- market_rows: 455568
+- match_rate: 0.82675439
+- matched_fights: 1508
+- opening_odds_covered_fights: 1508
+- report_path: data/processed/reports/market_data_validation_report.txt
+- status: ok
+- unmatched_fights: 316
+
+rating_coverage:
+- coverage_rate: 0.95766129
+- earliest_rating_utc: 2022-07-23T00:00:00Z
+- latest_rating_utc: 2026-03-07T00:00:00Z
+- rated_fighters: 950
+- status: ok
+- top_weight_class_count: 1
+- total_fighters: 992
+
+model_comparison:
+- best_log_loss_model: market_implied_probability:baselines_2026-03-12T22:26:33Z_ba80f49d21
+- best_roi_model: market_implied_probability:baselines_2026-03-12T22:26:33Z_ba80f49d21
+- challenger: ablation_logistic:ablation_2026-03-12T22:26:39Z
+- champion: market_implied_probability:baselines_2026-03-12T22:26:33Z_ba80f49d21
+- models_compared: 6
+- report_path: data/processed/reports/model_comparison_report.txt
+- status: ok
+
+walk_forward_evaluation_metrics:
+- brier_score: 0.24314469
+- completed_bouts_available: 1824
+- configured_min_train_bouts: 200
+- configured_test_bouts: 50
+- effective_min_train_bouts: 200
+- effective_rolling_train_bouts: n/a
+- effective_test_bouts: 50
+- folds: 33
+- hit_rate: 0.57081281
+- log_loss: 0.67923363
+- model_run_id: walk_forward_2026-03-12T22:26:33Z
+- predictions: 3248
+- predictions_path: data/processed/predictions/walk_forward_predictions.csv
+- report_path: data/processed/reports/walk_forward_report.txt
+- status: ok
+- window_auto_adjusted: false
+
+calibration_diagnostics:
+- brier_score: 0.24314469
+- dropped_chronology_invalid: 0
+- dropped_invalid_label: 0
+- dropped_missing_probability: 0
+- ece: 0.01431683
+- log_loss: 0.67923363
+- mce: 0.01947395
+- model_run_id: walk_forward_2026-03-12T22:26:33Z
+- predictions_loaded: 3248
+- predictions_used: 3248
+- report_path: data/processed/reports/calibration_diagnostics/report.txt
+- status: ok
+
+betting_simulation_results:
+- bets: 287
+- max_drawdown: 41.25397827
+- model_run_id: baselines_2026-03-12T22:26:33Z_ba80f49d21
+- report_path: data/processed/reports/backtest_report.txt
+- roi: -0.08959215
+- status: ok
+
+ablation_results:
+- best_calibration_ece: 0.02416445
+- best_log_loss: 0.61019774
+- best_scenario: market_only_no_interactions
+- comparison_report_path: data/processed/reports/ablation_comparison_report.txt
+- completed_bouts_available: 1824
+- contribution_report_path: data/processed/reports/ablation_contribution_report.txt
+- effective_min_train_bouts: 200
+- effective_test_bouts: 50
+- folds: 33
+- model_run_id: ablation_2026-03-12T22:26:39Z
+- predictions_path: data/processed/predictions/ablation_predictions.csv
+- scenarios: 10
+- status: ok
+- window_auto_adjusted: false
+
+evaluation_readiness_flags:
+- sample_size_flag: ok (completed_bouts=1824)
+- bout_stats_coverage_flag: ok (two_stats_rows=1824 completed_bouts=1824 coverage=1.000000)
+- fold_stability_flag: ok (folds=33)
+- market_coverage_flag: ok (matched_completed_fights=1508)
+- betting_activity_flag: ok (bets=287)
+- opening_odds_coverage_flag: ok (covered_fights=1508 total_fights=1824 coverage=0.826754)
+- closing_odds_coverage_flag: ok (covered_fights=1508 total_fights=1824 coverage=0.826754)
+
+Stage outcomes:
+- stage: ingestion_snapshot
+  description: Summarize existing ingested data snapshot (offline mode).
+  status: ok
+  started_at_utc: 2026-03-12T22:26:16Z
+  finished_at_utc: 2026-03-12T22:26:17Z
+  log_path: data/processed/logs/research_workflow/01_ingestion_snapshot.log
+  bouts_count: 1869
+  events_count: 153
+  fighter_bout_stats_count: 3738
+  fighters_count: 992
+  markets_count: 455568
+- stage: validate_data
+  description: Run chronology and data-integrity validations.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:17Z
+  finished_at_utc: 2026-03-12T22:26:19Z
+  log_path: data/processed/logs/research_workflow/02_validate_data.log
+  issues: 0
+  status: ok
+- stage: data_coverage
+  description: Build UFC data coverage snapshot.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:19Z
+  finished_at_utc: 2026-03-12T22:26:19Z
+  log_path: data/processed/logs/research_workflow/03_data_coverage.log
+  bouts_count: 1869
+  events_count: 153
+  fighter_bout_stats_count: 3738
+  fighters_count: 992
+  first_ufc_bout_utc: 2022-07-23T00:00:00Z
+  last_ufc_bout_utc: 2026-03-14T00:00:00Z
+  markets_count: 455568
+  model_predictions_count: 15594
+  promotion: UFC
+  ufc_bouts_count: 1869
+  ufc_completed_bouts_count: 1824
+  ufc_events_count: 153
+  ufc_market_rows_count: 455568
+- stage: generate_features
+  description: Generate pre-fight sequential features.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:19Z
+  finished_at_utc: 2026-03-12T22:26:19Z
+  log_path: data/processed/logs/research_workflow/04_generate_features.log
+  features_path: data/processed/features/pre_fight_features.csv
+  rows: 3738
+- stage: feature_coverage
+  description: Summarize key feature coverage on generated dataset.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:19Z
+  finished_at_utc: 2026-03-12T22:26:19Z
+  log_path: data/processed/logs/research_workflow/05_feature_coverage.log
+  avg_key_feature_coverage: 0.80603115
+  bouts: 1869
+  earliest_bout_utc: 2022-07-23T00:00:00Z
+  latest_bout_utc: 2026-03-14T00:00:00Z
+  min_key_feature_coverage: 0.57758159
+  rows: 3738
+- stage: data_coverage_audit
+  description: Generate data coverage audit report and join-failure diagnostics.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:19Z
+  finished_at_utc: 2026-03-12T22:26:19Z
+  log_path: data/processed/logs/research_workflow/06_data_coverage_audit.log
+  completed_bouts_with_one_stats_row: 0
+  completed_bouts_with_two_stats_rows: 1824
+  completed_bouts_with_zero_stats_rows: 0
+  report_path: data/processed/reports/data_coverage_audit.txt
+  total_completed_bouts: 1824
+  total_events: 153
+  total_fighter_bout_stats_rows: 3738
+  total_fighters: 992
+- stage: market_coverage
+  description: Generate market matching and odds coverage report.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:19Z
+  finished_at_utc: 2026-03-12T22:26:22Z
+  log_path: data/processed/logs/research_workflow/07_market_coverage.log
+  closing_odds_covered_fights: 1508
+  completed_fights: 1824
+  market_rows: 455568
+  match_rate: 0.82675439
+  matched_fights: 1508
+  opening_odds_covered_fights: 1508
+  report_path: data/processed/reports/market_data_validation_report.txt
+  unmatched_fights: 316
+- stage: build_ratings_history
+  description: Generate Elo rating history.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:22Z
+  finished_at_utc: 2026-03-12T22:26:22Z
+  log_path: data/processed/logs/research_workflow/08_build_ratings_history.log
+  bouts: 1869
+  ratings_path: data/processed/ratings/elo_ratings_history.csv
+  rows: 3738
+- stage: rating_coverage
+  description: Summarize rating coverage and temporal span.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:22Z
+  finished_at_utc: 2026-03-12T22:26:22Z
+  log_path: data/processed/logs/research_workflow/09_rating_coverage.log
+  coverage_rate: 0.95766129
+  earliest_rating_utc: 2022-07-23T00:00:00Z
+  latest_rating_utc: 2026-03-07T00:00:00Z
+  rated_fighters: 950
+  top_weight_class_count: 1
+  total_fighters: 992
+- stage: train_baselines
+  description: Train chronology-safe baseline models.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:22Z
+  finished_at_utc: 2026-03-12T22:26:33Z
+  log_path: data/processed/logs/research_workflow/10_train_baselines.log
+  model_run_id: baselines_2026-03-12T22:26:33Z_ba80f49d21
+  predictions: 2790
+  predictions_path: data/processed/predictions/baseline_predictions.csv
+  report_path: data/processed/reports/baseline_report.txt
+  scored_bouts: 365
+- stage: walk_forward_eval
+  description: Run chronological walk-forward evaluation.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:33Z
+  finished_at_utc: 2026-03-12T22:26:39Z
+  log_path: data/processed/logs/research_workflow/11_walk_forward_eval.log
+  brier_score: 0.24314469
+  completed_bouts_available: 1824
+  configured_min_train_bouts: 200
+  configured_test_bouts: 50
+  effective_min_train_bouts: 200
+  effective_rolling_train_bouts: n/a
+  effective_test_bouts: 50
+  folds: 33
+  hit_rate: 0.57081281
+  log_loss: 0.67923363
+  model_run_id: walk_forward_2026-03-12T22:26:33Z
+  predictions: 3248
+  predictions_path: data/processed/predictions/walk_forward_predictions.csv
+  report_path: data/processed/reports/walk_forward_report.txt
+  window_auto_adjusted: false
+- stage: calibration_diagnostics
+  description: Generate calibration diagnostics from walk-forward predictions.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:39Z
+  finished_at_utc: 2026-03-12T22:26:39Z
+  log_path: data/processed/logs/research_workflow/12_calibration_diagnostics.log
+  brier_score: 0.24314469
+  dropped_chronology_invalid: 0
+  dropped_invalid_label: 0
+  dropped_missing_probability: 0
+  ece: 0.01431683
+  log_loss: 0.67923363
+  mce: 0.01947395
+  model_run_id: walk_forward_2026-03-12T22:26:33Z
+  predictions_loaded: 3248
+  predictions_used: 3248
+  report_path: data/processed/reports/calibration_diagnostics/report.txt
+- stage: run_ablation_experiments
+  description: Run walk-forward ablation experiments.
+  status: ok
+  started_at_utc: 2026-03-12T22:26:39Z
+  finished_at_utc: 2026-03-12T22:47:55Z
+  log_path: data/processed/logs/research_workflow/13_run_ablation_experiments.log
+  best_calibration_ece: 0.02416445
+  best_log_loss: 0.61019774
+  best_scenario: market_only_no_interactions
+  comparison_report_path: data/processed/reports/ablation_comparison_report.txt
+  completed_bouts_available: 1824
+  contribution_report_path: data/processed/reports/ablation_contribution_report.txt
+  effective_min_train_bouts: 200
+  effective_test_bouts: 50
+  folds: 33
+  model_run_id: ablation_2026-03-12T22:26:39Z
+  predictions_path: data/processed/predictions/ablation_predictions.csv
+  scenarios: 10
+  window_auto_adjusted: false
+- stage: compare_models
+  description: Run multi-model comparison and champion/challenger selection.
+  status: ok
+  started_at_utc: 2026-03-12T22:47:55Z
+  finished_at_utc: 2026-03-12T22:48:07Z
+  log_path: data/processed/logs/research_workflow/14_compare_models.log
+  best_log_loss_model: market_implied_probability:baselines_2026-03-12T22:26:33Z_ba80f49d21
+  best_roi_model: market_implied_probability:baselines_2026-03-12T22:26:33Z_ba80f49d21
+  challenger: ablation_logistic:ablation_2026-03-12T22:26:39Z
+  champion: market_implied_probability:baselines_2026-03-12T22:26:33Z_ba80f49d21
+  models_compared: 6
+  report_path: data/processed/reports/model_comparison_report.txt
+- stage: run_backtest
+  description: Run betting simulation on baseline predictions.
+  status: ok
+  started_at_utc: 2026-03-12T22:48:07Z
+  finished_at_utc: 2026-03-12T22:48:09Z
+  log_path: data/processed/logs/research_workflow/15_run_backtest.log
+  bets: 287
+  max_drawdown: 41.25397827
+  model_run_id: baselines_2026-03-12T22:26:33Z_ba80f49d21
+  report_path: data/processed/reports/backtest_report.txt
+  roi: -0.08959215
+
+Required summary coverage:
+- ingestion: ok
+- data_coverage: ok
+- validation: ok
+- feature_coverage: ok
+- market_coverage: ok
+- data_coverage_audit: ok
+- rating_coverage: ok
+- model_comparison: ok
+- walk_forward_evaluation: ok
+- calibration_diagnostics: ok
+- betting_simulation: ok
+- ablation_results: ok

@@ -1,0 +1,53 @@
+"""Source-specific ingestion adapters."""
+
+from ingestion.sources.odds import (
+    MarketIngestionRunResult,
+    OddsFetcher,
+    OddsNormalizer,
+    OddsParser,
+    OddsPersister,
+    run_market_odds_ingestion,
+)
+from ingestion.sources.ufc_stats import (
+    UFCStatsBoutStatsFetcher,
+    UFCStatsBoutStatsIngestionService,
+    UFCStatsBoutStatsNormalizer,
+    UFCStatsBoutStatsParser,
+    UFCStatsFetcher,
+    UFCStatsFighterMetadataFetcher,
+    UFCStatsFighterMetadataIngestionService,
+    UFCStatsFighterMetadataNormalizer,
+    UFCStatsFighterMetadataParser,
+    UFCStatsIngestionService,
+    UFCStatsNormalizer,
+    UFCStatsParser,
+    UFCStatsPersister,
+    run_ufc_stats_bout_stats_ingestion,
+    run_ufc_stats_events_ingestion,
+    run_ufc_stats_fighter_metadata_ingestion,
+)
+
+__all__ = [
+    "OddsFetcher",
+    "OddsParser",
+    "OddsNormalizer",
+    "OddsPersister",
+    "MarketIngestionRunResult",
+    "run_market_odds_ingestion",
+    "UFCStatsBoutStatsFetcher",
+    "UFCStatsBoutStatsParser",
+    "UFCStatsBoutStatsNormalizer",
+    "UFCStatsBoutStatsIngestionService",
+    "UFCStatsFetcher",
+    "UFCStatsFighterMetadataFetcher",
+    "UFCStatsFighterMetadataParser",
+    "UFCStatsFighterMetadataNormalizer",
+    "UFCStatsParser",
+    "UFCStatsNormalizer",
+    "UFCStatsPersister",
+    "UFCStatsFighterMetadataIngestionService",
+    "UFCStatsIngestionService",
+    "run_ufc_stats_bout_stats_ingestion",
+    "run_ufc_stats_fighter_metadata_ingestion",
+    "run_ufc_stats_events_ingestion",
+]

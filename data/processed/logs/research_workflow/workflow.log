@@ -1,0 +1,198 @@
+workflow_started_at_utc=2026-03-12T12:04:10Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T12:04:10Z finished_at_utc=2026-03-12T12:04:10Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T12:04:10Z finished_at_utc=2026-03-12T12:04:10Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T12:04:10Z finished_at_utc=2026-03-12T12:04:10Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T12:04:10Z finished_at_utc=2026-03-12T12:04:10Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T12:04:10Z finished_at_utc=2026-03-12T12:04:10Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T12:04:10Z finished_at_utc=2026-03-12T12:04:10Z log_path=data/processed/logs/research_workflow/06_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T12:04:10Z finished_at_utc=2026-03-12T12:04:10Z log_path=data/processed/logs/research_workflow/07_rating_coverage.log
+stage=train_baselines status=failed started_at_utc=2026-03-12T12:04:10Z finished_at_utc=2026-03-12T12:04:10Z log_path=data/processed/logs/research_workflow/08_train_baselines.log
+workflow_status=failed failed_stage=train_baselines
+workflow_started_at_utc=2026-03-12T12:04:59Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T12:04:59Z finished_at_utc=2026-03-12T12:04:59Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T12:04:59Z finished_at_utc=2026-03-12T12:04:59Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T12:04:59Z finished_at_utc=2026-03-12T12:04:59Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T12:04:59Z finished_at_utc=2026-03-12T12:04:59Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T12:04:59Z finished_at_utc=2026-03-12T12:04:59Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T12:04:59Z finished_at_utc=2026-03-12T12:04:59Z log_path=data/processed/logs/research_workflow/06_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T12:04:59Z finished_at_utc=2026-03-12T12:04:59Z log_path=data/processed/logs/research_workflow/07_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T12:04:59Z finished_at_utc=2026-03-12T12:04:59Z log_path=data/processed/logs/research_workflow/08_train_baselines.log
+stage=walk_forward_eval status=failed started_at_utc=2026-03-12T12:04:59Z finished_at_utc=2026-03-12T12:04:59Z log_path=data/processed/logs/research_workflow/09_walk_forward_eval.log
+workflow_status=failed failed_stage=walk_forward_eval
+workflow_started_at_utc=2026-03-12T12:06:09Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T12:06:09Z finished_at_utc=2026-03-12T12:06:09Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T12:06:09Z finished_at_utc=2026-03-12T12:06:09Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T12:06:09Z finished_at_utc=2026-03-12T12:06:09Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T12:06:09Z finished_at_utc=2026-03-12T12:06:09Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T12:06:09Z finished_at_utc=2026-03-12T12:06:09Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T12:06:09Z finished_at_utc=2026-03-12T12:06:09Z log_path=data/processed/logs/research_workflow/06_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T12:06:09Z finished_at_utc=2026-03-12T12:06:09Z log_path=data/processed/logs/research_workflow/07_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T12:06:09Z finished_at_utc=2026-03-12T12:06:09Z log_path=data/processed/logs/research_workflow/08_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T12:06:09Z finished_at_utc=2026-03-12T12:06:09Z log_path=data/processed/logs/research_workflow/09_walk_forward_eval.log
+stage=calibration_diagnostics status=failed started_at_utc=2026-03-12T12:06:09Z finished_at_utc=2026-03-12T12:06:09Z log_path=data/processed/logs/research_workflow/10_calibration_diagnostics.log
+workflow_status=failed failed_stage=calibration_diagnostics
+workflow_started_at_utc=2026-03-12T12:06:47Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:47Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:47Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:47Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:47Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:47Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:47Z log_path=data/processed/logs/research_workflow/06_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:47Z log_path=data/processed/logs/research_workflow/07_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:47Z log_path=data/processed/logs/research_workflow/08_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:47Z log_path=data/processed/logs/research_workflow/09_walk_forward_eval.log
+stage=calibration_diagnostics status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:47Z log_path=data/processed/logs/research_workflow/10_calibration_diagnostics.log
+stage=run_ablation_experiments status=ok started_at_utc=2026-03-12T12:06:47Z finished_at_utc=2026-03-12T12:06:48Z log_path=data/processed/logs/research_workflow/11_run_ablation_experiments.log
+stage=compare_models status=ok started_at_utc=2026-03-12T12:06:48Z finished_at_utc=2026-03-12T12:06:48Z log_path=data/processed/logs/research_workflow/12_compare_models.log
+stage=run_backtest status=ok started_at_utc=2026-03-12T12:06:48Z finished_at_utc=2026-03-12T12:06:48Z log_path=data/processed/logs/research_workflow/13_run_backtest.log
+workflow_status=ok
+workflow_started_at_utc=2026-03-12T14:11:44Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T14:11:44Z finished_at_utc=2026-03-12T14:11:44Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T14:11:44Z finished_at_utc=2026-03-12T14:11:44Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T14:11:44Z finished_at_utc=2026-03-12T14:11:44Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T14:11:44Z finished_at_utc=2026-03-12T14:11:44Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T14:11:44Z finished_at_utc=2026-03-12T14:11:44Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T14:11:44Z finished_at_utc=2026-03-12T14:11:44Z log_path=data/processed/logs/research_workflow/06_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T14:11:44Z finished_at_utc=2026-03-12T14:11:44Z log_path=data/processed/logs/research_workflow/07_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T14:11:44Z finished_at_utc=2026-03-12T14:11:45Z log_path=data/processed/logs/research_workflow/08_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T14:11:45Z finished_at_utc=2026-03-12T14:11:45Z log_path=data/processed/logs/research_workflow/09_walk_forward_eval.log
+stage=calibration_diagnostics status=ok started_at_utc=2026-03-12T14:11:45Z finished_at_utc=2026-03-12T14:11:45Z log_path=data/processed/logs/research_workflow/10_calibration_diagnostics.log
+stage=run_ablation_experiments status=ok started_at_utc=2026-03-12T14:11:45Z finished_at_utc=2026-03-12T14:11:46Z log_path=data/processed/logs/research_workflow/11_run_ablation_experiments.log
+stage=compare_models status=ok started_at_utc=2026-03-12T14:11:46Z finished_at_utc=2026-03-12T14:11:46Z log_path=data/processed/logs/research_workflow/12_compare_models.log
+stage=run_backtest status=ok started_at_utc=2026-03-12T14:11:46Z finished_at_utc=2026-03-12T14:11:46Z log_path=data/processed/logs/research_workflow/13_run_backtest.log
+workflow_status=ok
+workflow_started_at_utc=2026-03-12T14:29:41Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T14:29:41Z finished_at_utc=2026-03-12T14:29:42Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=failed started_at_utc=2026-03-12T14:29:42Z finished_at_utc=2026-03-12T14:29:42Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+workflow_status=failed failed_stage=validate_data
+workflow_started_at_utc=2026-03-12T14:30:41Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T14:30:41Z finished_at_utc=2026-03-12T14:30:41Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T14:30:41Z finished_at_utc=2026-03-12T14:30:41Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T14:30:41Z finished_at_utc=2026-03-12T14:30:41Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T14:30:41Z finished_at_utc=2026-03-12T14:30:41Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T14:30:41Z finished_at_utc=2026-03-12T14:30:41Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=data_coverage_audit status=ok started_at_utc=2026-03-12T14:30:41Z finished_at_utc=2026-03-12T14:30:41Z log_path=data/processed/logs/research_workflow/06_data_coverage_audit.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T14:30:41Z finished_at_utc=2026-03-12T14:30:41Z log_path=data/processed/logs/research_workflow/07_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T14:30:41Z finished_at_utc=2026-03-12T14:30:41Z log_path=data/processed/logs/research_workflow/08_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T14:30:41Z finished_at_utc=2026-03-12T14:30:50Z log_path=data/processed/logs/research_workflow/09_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T14:30:50Z finished_at_utc=2026-03-12T14:30:56Z log_path=data/processed/logs/research_workflow/10_walk_forward_eval.log
+stage=calibration_diagnostics status=ok started_at_utc=2026-03-12T14:30:56Z finished_at_utc=2026-03-12T14:30:56Z log_path=data/processed/logs/research_workflow/11_calibration_diagnostics.log
+workflow_started_at_utc=2026-03-12T14:34:27Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T14:34:27Z finished_at_utc=2026-03-12T14:34:27Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T14:34:27Z finished_at_utc=2026-03-12T14:34:27Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T14:34:27Z finished_at_utc=2026-03-12T14:34:27Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T14:34:27Z finished_at_utc=2026-03-12T14:34:27Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T14:34:27Z finished_at_utc=2026-03-12T14:34:27Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=data_coverage_audit status=ok started_at_utc=2026-03-12T14:34:27Z finished_at_utc=2026-03-12T14:34:27Z log_path=data/processed/logs/research_workflow/06_data_coverage_audit.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T14:34:27Z finished_at_utc=2026-03-12T14:34:27Z log_path=data/processed/logs/research_workflow/07_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T14:34:27Z finished_at_utc=2026-03-12T14:34:27Z log_path=data/processed/logs/research_workflow/08_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T14:34:27Z finished_at_utc=2026-03-12T14:34:36Z log_path=data/processed/logs/research_workflow/09_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T14:34:36Z finished_at_utc=2026-03-12T14:34:36Z log_path=data/processed/logs/research_workflow/10_walk_forward_eval.log
+stage=calibration_diagnostics status=ok started_at_utc=2026-03-12T14:34:36Z finished_at_utc=2026-03-12T14:34:36Z log_path=data/processed/logs/research_workflow/11_calibration_diagnostics.log
+stage=run_ablation_experiments status=ok started_at_utc=2026-03-12T14:34:36Z finished_at_utc=2026-03-12T14:36:35Z log_path=data/processed/logs/research_workflow/12_run_ablation_experiments.log
+stage=compare_models status=ok started_at_utc=2026-03-12T14:36:35Z finished_at_utc=2026-03-12T14:36:36Z log_path=data/processed/logs/research_workflow/13_compare_models.log
+stage=run_backtest status=ok started_at_utc=2026-03-12T14:36:36Z finished_at_utc=2026-03-12T14:36:36Z log_path=data/processed/logs/research_workflow/14_run_backtest.log
+workflow_status=ok
+stage=run_ablation_experiments status=ok started_at_utc=2026-03-12T14:30:56Z finished_at_utc=2026-03-12T14:52:19Z log_path=data/processed/logs/research_workflow/12_run_ablation_experiments.log
+stage=compare_models status=ok started_at_utc=2026-03-12T14:52:19Z finished_at_utc=2026-03-12T14:52:20Z log_path=data/processed/logs/research_workflow/13_compare_models.log
+stage=run_backtest status=failed started_at_utc=2026-03-12T14:52:20Z finished_at_utc=2026-03-12T14:52:20Z log_path=data/processed/logs/research_workflow/14_run_backtest.log
+workflow_status=failed failed_stage=run_backtest
+workflow_started_at_utc=2026-03-12T14:59:35Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T14:59:35Z finished_at_utc=2026-03-12T14:59:35Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T14:59:35Z finished_at_utc=2026-03-12T14:59:35Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T14:59:35Z finished_at_utc=2026-03-12T14:59:35Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T14:59:35Z finished_at_utc=2026-03-12T14:59:35Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T14:59:35Z finished_at_utc=2026-03-12T14:59:35Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=data_coverage_audit status=ok started_at_utc=2026-03-12T14:59:35Z finished_at_utc=2026-03-12T14:59:35Z log_path=data/processed/logs/research_workflow/06_data_coverage_audit.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T14:59:35Z finished_at_utc=2026-03-12T14:59:35Z log_path=data/processed/logs/research_workflow/07_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T14:59:35Z finished_at_utc=2026-03-12T14:59:35Z log_path=data/processed/logs/research_workflow/08_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T14:59:35Z finished_at_utc=2026-03-12T14:59:43Z log_path=data/processed/logs/research_workflow/09_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T14:59:43Z finished_at_utc=2026-03-12T14:59:50Z log_path=data/processed/logs/research_workflow/10_walk_forward_eval.log
+stage=calibration_diagnostics status=ok started_at_utc=2026-03-12T14:59:50Z finished_at_utc=2026-03-12T14:59:50Z log_path=data/processed/logs/research_workflow/11_calibration_diagnostics.log
+stage=run_ablation_experiments status=ok started_at_utc=2026-03-12T14:59:50Z finished_at_utc=2026-03-12T15:21:09Z log_path=data/processed/logs/research_workflow/12_run_ablation_experiments.log
+stage=compare_models status=ok started_at_utc=2026-03-12T15:21:09Z finished_at_utc=2026-03-12T15:21:10Z log_path=data/processed/logs/research_workflow/13_compare_models.log
+stage=run_backtest status=ok started_at_utc=2026-03-12T15:21:10Z finished_at_utc=2026-03-12T15:21:10Z log_path=data/processed/logs/research_workflow/14_run_backtest.log
+workflow_status=ok
+workflow_started_at_utc=2026-03-12T15:50:34Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T15:50:34Z finished_at_utc=2026-03-12T15:50:34Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T15:50:34Z finished_at_utc=2026-03-12T15:50:34Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T15:50:34Z finished_at_utc=2026-03-12T15:50:34Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T15:50:34Z finished_at_utc=2026-03-12T15:50:34Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T15:50:34Z finished_at_utc=2026-03-12T15:50:34Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=data_coverage_audit status=ok started_at_utc=2026-03-12T15:50:34Z finished_at_utc=2026-03-12T15:50:35Z log_path=data/processed/logs/research_workflow/06_data_coverage_audit.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T15:50:35Z finished_at_utc=2026-03-12T15:50:35Z log_path=data/processed/logs/research_workflow/07_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T15:50:35Z finished_at_utc=2026-03-12T15:50:35Z log_path=data/processed/logs/research_workflow/08_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T15:50:35Z finished_at_utc=2026-03-12T15:50:45Z log_path=data/processed/logs/research_workflow/09_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T15:50:45Z finished_at_utc=2026-03-12T15:50:52Z log_path=data/processed/logs/research_workflow/10_walk_forward_eval.log
+stage=calibration_diagnostics status=ok started_at_utc=2026-03-12T15:50:52Z finished_at_utc=2026-03-12T15:50:52Z log_path=data/processed/logs/research_workflow/11_calibration_diagnostics.log
+workflow_started_at_utc=2026-03-12T16:06:13Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T16:06:13Z finished_at_utc=2026-03-12T16:06:13Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T16:06:13Z finished_at_utc=2026-03-12T16:06:13Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T16:06:13Z finished_at_utc=2026-03-12T16:06:13Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T16:06:13Z finished_at_utc=2026-03-12T16:06:13Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T16:06:13Z finished_at_utc=2026-03-12T16:06:13Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=data_coverage_audit status=ok started_at_utc=2026-03-12T16:06:13Z finished_at_utc=2026-03-12T16:06:13Z log_path=data/processed/logs/research_workflow/06_data_coverage_audit.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T16:06:13Z finished_at_utc=2026-03-12T16:06:13Z log_path=data/processed/logs/research_workflow/07_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T16:06:13Z finished_at_utc=2026-03-12T16:06:13Z log_path=data/processed/logs/research_workflow/08_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T16:06:13Z finished_at_utc=2026-03-12T16:06:23Z log_path=data/processed/logs/research_workflow/09_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T16:06:23Z finished_at_utc=2026-03-12T16:06:31Z log_path=data/processed/logs/research_workflow/10_walk_forward_eval.log
+stage=calibration_diagnostics status=ok started_at_utc=2026-03-12T16:06:31Z finished_at_utc=2026-03-12T16:06:31Z log_path=data/processed/logs/research_workflow/11_calibration_diagnostics.log
+stage=run_ablation_experiments status=ok started_at_utc=2026-03-12T15:50:52Z finished_at_utc=2026-03-12T16:12:20Z log_path=data/processed/logs/research_workflow/12_run_ablation_experiments.log
+stage=compare_models status=ok started_at_utc=2026-03-12T16:12:20Z finished_at_utc=2026-03-12T16:12:20Z log_path=data/processed/logs/research_workflow/13_compare_models.log
+stage=run_backtest status=failed started_at_utc=2026-03-12T16:12:20Z finished_at_utc=2026-03-12T16:12:20Z log_path=data/processed/logs/research_workflow/14_run_backtest.log
+workflow_status=failed failed_stage=run_backtest
+stage=run_ablation_experiments status=ok started_at_utc=2026-03-12T16:06:31Z finished_at_utc=2026-03-12T16:27:59Z log_path=data/processed/logs/research_workflow/12_run_ablation_experiments.log
+stage=compare_models status=ok started_at_utc=2026-03-12T16:27:59Z finished_at_utc=2026-03-12T16:28:00Z log_path=data/processed/logs/research_workflow/13_compare_models.log
+stage=run_backtest status=ok started_at_utc=2026-03-12T16:28:00Z finished_at_utc=2026-03-12T16:28:00Z log_path=data/processed/logs/research_workflow/14_run_backtest.log
+workflow_status=ok
+workflow_started_at_utc=2026-03-12T18:23:59Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T18:23:59Z finished_at_utc=2026-03-12T18:23:59Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T18:23:59Z finished_at_utc=2026-03-12T18:23:59Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T18:23:59Z finished_at_utc=2026-03-12T18:23:59Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T18:23:59Z finished_at_utc=2026-03-12T18:24:00Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T18:24:00Z finished_at_utc=2026-03-12T18:24:00Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=data_coverage_audit status=ok started_at_utc=2026-03-12T18:24:00Z finished_at_utc=2026-03-12T18:24:00Z log_path=data/processed/logs/research_workflow/06_data_coverage_audit.log
+stage=market_coverage status=ok started_at_utc=2026-03-12T18:24:00Z finished_at_utc=2026-03-12T18:24:00Z log_path=data/processed/logs/research_workflow/07_market_coverage.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T18:24:00Z finished_at_utc=2026-03-12T18:24:00Z log_path=data/processed/logs/research_workflow/08_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T18:24:00Z finished_at_utc=2026-03-12T18:24:00Z log_path=data/processed/logs/research_workflow/09_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T18:24:00Z finished_at_utc=2026-03-12T18:24:10Z log_path=data/processed/logs/research_workflow/10_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T18:24:10Z finished_at_utc=2026-03-12T18:24:17Z log_path=data/processed/logs/research_workflow/11_walk_forward_eval.log
+stage=calibration_diagnostics status=ok started_at_utc=2026-03-12T18:24:17Z finished_at_utc=2026-03-12T18:24:17Z log_path=data/processed/logs/research_workflow/12_calibration_diagnostics.log
+stage=run_ablation_experiments status=ok started_at_utc=2026-03-12T18:24:17Z finished_at_utc=2026-03-12T18:45:43Z log_path=data/processed/logs/research_workflow/13_run_ablation_experiments.log
+stage=compare_models status=ok started_at_utc=2026-03-12T18:45:43Z finished_at_utc=2026-03-12T18:45:44Z log_path=data/processed/logs/research_workflow/14_compare_models.log
+stage=run_backtest status=ok started_at_utc=2026-03-12T18:45:44Z finished_at_utc=2026-03-12T18:45:44Z log_path=data/processed/logs/research_workflow/15_run_backtest.log
+workflow_status=ok
+workflow_started_at_utc=2026-03-12T19:15:55Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T19:15:55Z finished_at_utc=2026-03-12T19:15:55Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T19:15:55Z finished_at_utc=2026-03-12T19:15:55Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T19:15:55Z finished_at_utc=2026-03-12T19:15:55Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T19:15:55Z finished_at_utc=2026-03-12T19:15:55Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T19:15:55Z finished_at_utc=2026-03-12T19:15:55Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=data_coverage_audit status=ok started_at_utc=2026-03-12T19:15:55Z finished_at_utc=2026-03-12T19:15:55Z log_path=data/processed/logs/research_workflow/06_data_coverage_audit.log
+stage=market_coverage status=ok started_at_utc=2026-03-12T19:15:55Z finished_at_utc=2026-03-12T19:15:55Z log_path=data/processed/logs/research_workflow/07_market_coverage.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T19:15:55Z finished_at_utc=2026-03-12T19:15:55Z log_path=data/processed/logs/research_workflow/08_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T19:15:55Z finished_at_utc=2026-03-12T19:15:55Z log_path=data/processed/logs/research_workflow/09_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T19:15:55Z finished_at_utc=2026-03-12T19:16:06Z log_path=data/processed/logs/research_workflow/10_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T19:16:06Z finished_at_utc=2026-03-12T19:16:14Z log_path=data/processed/logs/research_workflow/11_walk_forward_eval.log
+stage=calibration_diagnostics status=ok started_at_utc=2026-03-12T19:16:14Z finished_at_utc=2026-03-12T19:16:14Z log_path=data/processed/logs/research_workflow/12_calibration_diagnostics.log
+stage=run_ablation_experiments status=ok started_at_utc=2026-03-12T19:16:14Z finished_at_utc=2026-03-12T19:37:59Z log_path=data/processed/logs/research_workflow/13_run_ablation_experiments.log
+stage=compare_models status=ok started_at_utc=2026-03-12T19:37:59Z finished_at_utc=2026-03-12T19:37:59Z log_path=data/processed/logs/research_workflow/14_compare_models.log
+stage=run_backtest status=ok started_at_utc=2026-03-12T19:37:59Z finished_at_utc=2026-03-12T19:37:59Z log_path=data/processed/logs/research_workflow/15_run_backtest.log
+workflow_status=ok
+workflow_started_at_utc=2026-03-12T22:26:16Z
+stage=ingestion_snapshot status=ok started_at_utc=2026-03-12T22:26:16Z finished_at_utc=2026-03-12T22:26:17Z log_path=data/processed/logs/research_workflow/01_ingestion_snapshot.log
+stage=validate_data status=ok started_at_utc=2026-03-12T22:26:17Z finished_at_utc=2026-03-12T22:26:19Z log_path=data/processed/logs/research_workflow/02_validate_data.log
+stage=data_coverage status=ok started_at_utc=2026-03-12T22:26:19Z finished_at_utc=2026-03-12T22:26:19Z log_path=data/processed/logs/research_workflow/03_data_coverage.log
+stage=generate_features status=ok started_at_utc=2026-03-12T22:26:19Z finished_at_utc=2026-03-12T22:26:19Z log_path=data/processed/logs/research_workflow/04_generate_features.log
+stage=feature_coverage status=ok started_at_utc=2026-03-12T22:26:19Z finished_at_utc=2026-03-12T22:26:19Z log_path=data/processed/logs/research_workflow/05_feature_coverage.log
+stage=data_coverage_audit status=ok started_at_utc=2026-03-12T22:26:19Z finished_at_utc=2026-03-12T22:26:19Z log_path=data/processed/logs/research_workflow/06_data_coverage_audit.log
+stage=market_coverage status=ok started_at_utc=2026-03-12T22:26:19Z finished_at_utc=2026-03-12T22:26:22Z log_path=data/processed/logs/research_workflow/07_market_coverage.log
+stage=build_ratings_history status=ok started_at_utc=2026-03-12T22:26:22Z finished_at_utc=2026-03-12T22:26:22Z log_path=data/processed/logs/research_workflow/08_build_ratings_history.log
+stage=rating_coverage status=ok started_at_utc=2026-03-12T22:26:22Z finished_at_utc=2026-03-12T22:26:22Z log_path=data/processed/logs/research_workflow/09_rating_coverage.log
+stage=train_baselines status=ok started_at_utc=2026-03-12T22:26:22Z finished_at_utc=2026-03-12T22:26:33Z log_path=data/processed/logs/research_workflow/10_train_baselines.log
+stage=walk_forward_eval status=ok started_at_utc=2026-03-12T22:26:33Z finished_at_utc=2026-03-12T22:26:39Z log_path=data/processed/logs/research_workflow/11_walk_forward_eval.log
+stage=calibration_diagnostics status=ok started_at_utc=2026-03-12T22:26:39Z finished_at_utc=2026-03-12T22:26:39Z log_path=data/processed/logs/research_workflow/12_calibration_diagnostics.log
+stage=run_ablation_experiments status=ok started_at_utc=2026-03-12T22:26:39Z finished_at_utc=2026-03-12T22:47:55Z log_path=data/processed/logs/research_workflow/13_run_ablation_experiments.log
+stage=compare_models status=ok started_at_utc=2026-03-12T22:47:55Z finished_at_utc=2026-03-12T22:48:07Z log_path=data/processed/logs/research_workflow/14_compare_models.log
+stage=run_backtest status=ok started_at_utc=2026-03-12T22:48:07Z finished_at_utc=2026-03-12T22:48:09Z log_path=data/processed/logs/research_workflow/15_run_backtest.log
+workflow_status=ok

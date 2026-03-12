@@ -1,0 +1,57 @@
+walk_forward_evaluation_report
+model_name=elo_logistic
+window_type=expanding
+fold_count=33
+predictions=3248
+aggregate_metrics
+log_loss=0.67923363
+brier_score=0.24314469
+hit_rate=0.57081281
+aggregate_calibration
+ece=0.01431683
+mce=0.01947395
+period_performance
+fold=1 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2022-12-10T00:00:00Z test_start_utc=2022-12-10T00:00:00Z test_end_utc=2023-02-04T00:00:00Z train_bouts=200 test_bouts=50 log_loss=0.70339606 brier_score=0.25502233 hit_rate=0.51000000 calibration_ece=0.06770142 calibration_mce=0.49532122
+fold=2 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2023-02-04T00:00:00Z test_start_utc=2023-02-04T00:00:00Z test_end_utc=2023-03-11T00:00:00Z train_bouts=250 test_bouts=50 log_loss=0.69042295 brier_score=0.24864699 hit_rate=0.53000000 calibration_ece=0.00551525 calibration_mce=0.01103049
+fold=3 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2023-03-11T00:00:00Z test_start_utc=2023-03-11T00:00:00Z test_end_utc=2023-04-15T00:00:00Z train_bouts=300 test_bouts=50 log_loss=0.69959983 brier_score=0.25309515 hit_rate=0.52000000 calibration_ece=0.03732101 calibration_mce=0.63281648
+fold=4 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2023-04-15T00:00:00Z test_start_utc=2023-04-15T00:00:00Z test_end_utc=2023-05-13T00:00:00Z train_bouts=350 test_bouts=50 log_loss=0.68862220 brier_score=0.24774804 hit_rate=0.52000000 calibration_ece=0.00097388 calibration_mce=0.00128141
+fold=5 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2023-05-13T00:00:00Z test_start_utc=2023-05-13T00:00:00Z test_end_utc=2023-06-17T00:00:00Z train_bouts=400 test_bouts=50 log_loss=0.71044936 brier_score=0.25861722 hit_rate=0.40000000 calibration_ece=0.12421031 calibration_mce=0.17251432
+fold=6 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2023-06-17T00:00:00Z test_start_utc=2023-06-17T00:00:00Z test_end_utc=2023-07-15T00:00:00Z train_bouts=450 test_bouts=50 log_loss=0.69081670 brier_score=0.24883480 hit_rate=0.63000000 calibration_ece=0.12714496 calibration_mce=0.14784297
+fold=7 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2023-07-15T00:00:00Z test_start_utc=2023-07-15T00:00:00Z test_end_utc=2023-08-12T00:00:00Z train_bouts=500 test_bouts=50 log_loss=0.71343925 brier_score=0.26002375 hit_rate=0.40000000 calibration_ece=0.13060970 calibration_mce=0.62077171
+fold=8 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2023-08-12T00:00:00Z test_start_utc=2023-08-12T00:00:00Z test_end_utc=2023-09-09T00:00:00Z train_bouts=550 test_bouts=50 log_loss=0.68461022 brier_score=0.24573359 hit_rate=0.66000000 calibration_ece=0.15098574 calibration_mce=0.19866544
+fold=9 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2023-09-09T00:00:00Z test_start_utc=2023-09-16T00:00:00Z test_end_utc=2023-10-21T00:00:00Z train_bouts=600 test_bouts=50 log_loss=0.69737905 brier_score=0.25205045 hit_rate=0.53000000 calibration_ece=0.04568354 calibration_mce=0.36940600
+fold=10 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2023-10-21T00:00:00Z test_start_utc=2023-10-21T00:00:00Z test_end_utc=2023-12-09T00:00:00Z train_bouts=650 test_bouts=50 log_loss=0.67620710 brier_score=0.24156937 hit_rate=0.61000000 calibration_ece=0.07959962 calibration_mce=0.08844402
+fold=11 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2023-12-09T00:00:00Z test_start_utc=2023-12-09T00:00:00Z test_end_utc=2024-02-03T00:00:00Z train_bouts=700 test_bouts=50 log_loss=0.67267682 brier_score=0.23981306 hit_rate=0.58000000 calibration_ece=0.02680122 calibration_mce=0.08445501
+fold=12 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2024-02-03T00:00:00Z test_start_utc=2024-02-03T00:00:00Z test_end_utc=2024-03-02T00:00:00Z train_bouts=750 test_bouts=50 log_loss=0.64917943 brier_score=0.22839018 hit_rate=0.63000000 calibration_ece=0.07650506 calibration_mce=0.27938381
+fold=13 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2024-03-02T00:00:00Z test_start_utc=2024-03-02T00:00:00Z test_end_utc=2024-03-30T00:00:00Z train_bouts=800 test_bouts=50 log_loss=0.70545873 brier_score=0.25588758 hit_rate=0.50000000 calibration_ece=0.06959636 calibration_mce=0.09000943
+fold=14 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2024-03-30T00:00:00Z test_start_utc=2024-03-30T00:00:00Z test_end_utc=2024-05-04T00:00:00Z train_bouts=850 test_bouts=50 log_loss=0.69507436 brier_score=0.25067912 hit_rate=0.55000000 calibration_ece=0.07266680 calibration_mce=0.72771640
+fold=15 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2024-05-04T00:00:00Z test_start_utc=2024-05-04T00:00:00Z test_end_utc=2024-06-08T00:00:00Z train_bouts=900 test_bouts=50 log_loss=0.69586618 brier_score=0.25115696 hit_rate=0.59000000 calibration_ece=0.08476114 calibration_mce=0.30948103
+fold=16 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2024-06-08T00:00:00Z test_start_utc=2024-06-08T00:00:00Z test_end_utc=2024-07-13T00:00:00Z train_bouts=950 test_bouts=50 log_loss=0.66562672 brier_score=0.23647509 hit_rate=0.63000000 calibration_ece=0.07199015 calibration_mce=0.16900370
+fold=17 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2024-07-13T00:00:00Z test_start_utc=2024-07-13T00:00:00Z test_end_utc=2024-08-10T00:00:00Z train_bouts=1000 test_bouts=50 log_loss=0.68315887 brier_score=0.24506193 hit_rate=0.54000000 calibration_ece=0.02553458 calibration_mce=0.13300940
+fold=18 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2024-08-10T00:00:00Z test_start_utc=2024-08-17T00:00:00Z test_end_utc=2024-09-28T00:00:00Z train_bouts=1050 test_bouts=50 log_loss=0.66709136 brier_score=0.23711223 hit_rate=0.58000000 calibration_ece=0.02078791 calibration_mce=0.02635774
+fold=19 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2024-09-28T00:00:00Z test_start_utc=2024-09-28T00:00:00Z test_end_utc=2024-10-26T00:00:00Z train_bouts=1100 test_bouts=50 log_loss=0.66471739 brier_score=0.23616912 hit_rate=0.62000000 calibration_ece=0.05055845 calibration_mce=0.10731190
+fold=20 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2024-10-26T00:00:00Z test_start_utc=2024-10-26T00:00:00Z test_end_utc=2024-11-23T00:00:00Z train_bouts=1150 test_bouts=50 log_loss=0.68258677 brier_score=0.24471989 hit_rate=0.65000000 calibration_ece=0.10947123 calibration_mce=0.27337281
+fold=21 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2024-11-23T00:00:00Z test_start_utc=2024-11-23T00:00:00Z test_end_utc=2025-01-18T00:00:00Z train_bouts=1200 test_bouts=50 log_loss=0.69634695 brier_score=0.25151682 hit_rate=0.51000000 calibration_ece=0.11331790 calibration_mce=0.72028066
+fold=22 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2025-01-18T00:00:00Z test_start_utc=2025-01-18T00:00:00Z test_end_utc=2025-02-22T00:00:00Z train_bouts=1250 test_bouts=50 log_loss=0.66631675 brier_score=0.23681283 hit_rate=0.65000000 calibration_ece=0.11883893 calibration_mce=0.14264729
+fold=23 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2025-02-22T00:00:00Z test_start_utc=2025-02-22T00:00:00Z test_end_utc=2025-03-22T00:00:00Z train_bouts=1300 test_bouts=50 log_loss=0.65806180 brier_score=0.23312753 hit_rate=0.58000000 calibration_ece=0.07467430 calibration_mce=0.28002727
+fold=24 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2025-03-22T00:00:00Z test_start_utc=2025-03-22T00:00:00Z test_end_utc=2025-04-26T00:00:00Z train_bouts=1350 test_bouts=50 log_loss=0.68692629 brier_score=0.24699667 hit_rate=0.58000000 calibration_ece=0.08236959 calibration_mce=0.26971129
+fold=25 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2025-04-26T00:00:00Z test_start_utc=2025-04-26T00:00:00Z test_end_utc=2025-06-07T00:00:00Z train_bouts=1400 test_bouts=50 log_loss=0.65167127 brier_score=0.23007000 hit_rate=0.58000000 calibration_ece=0.03143656 calibration_mce=0.27706478
+fold=26 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2025-06-07T00:00:00Z test_start_utc=2025-06-07T00:00:00Z test_end_utc=2025-07-12T00:00:00Z train_bouts=1450 test_bouts=50 log_loss=0.67726534 brier_score=0.24159080 hit_rate=0.58000000 calibration_ece=0.06364632 calibration_mce=0.15128958
+fold=27 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2025-07-12T00:00:00Z test_start_utc=2025-07-12T00:00:00Z test_end_utc=2025-08-09T00:00:00Z train_bouts=1500 test_bouts=50 log_loss=0.67192784 brier_score=0.23922116 hit_rate=0.60000000 calibration_ece=0.06401614 calibration_mce=0.72822741
+fold=28 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2025-08-09T00:00:00Z test_start_utc=2025-08-09T00:00:00Z test_end_utc=2025-09-13T00:00:00Z train_bouts=1550 test_bouts=50 log_loss=0.67313288 brier_score=0.24044177 hit_rate=0.56000000 calibration_ece=0.03800882 calibration_mce=0.25628301
+fold=29 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2025-09-13T00:00:00Z test_start_utc=2025-09-13T00:00:00Z test_end_utc=2025-10-18T00:00:00Z train_bouts=1600 test_bouts=50 log_loss=0.65706001 brier_score=0.23252201 hit_rate=0.58000000 calibration_ece=0.05273264 calibration_mce=0.28576175
+fold=30 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2025-10-18T00:00:00Z test_start_utc=2025-10-18T00:00:00Z test_end_utc=2025-11-15T00:00:00Z train_bouts=1650 test_bouts=50 log_loss=0.67886341 brier_score=0.24321110 hit_rate=0.57000000 calibration_ece=0.05031492 calibration_mce=0.28047972
+fold=31 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2025-11-15T00:00:00Z test_start_utc=2025-11-15T00:00:00Z test_end_utc=2026-01-24T00:00:00Z train_bouts=1700 test_bouts=50 log_loss=0.65208636 brier_score=0.22979566 hit_rate=0.66000000 calibration_ece=0.07572353 calibration_mce=0.10332565
+fold=32 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2026-01-24T00:00:00Z test_start_utc=2026-01-24T00:00:00Z test_end_utc=2026-02-28T00:00:00Z train_bouts=1750 test_bouts=50 log_loss=0.65020640 brier_score=0.22851202 hit_rate=0.60000000 calibration_ece=0.11786283 calibration_mce=0.38109151
+fold=33 train_start_utc=2022-07-23T00:00:00Z train_end_utc=2026-02-28T00:00:00Z test_start_utc=2026-02-28T00:00:00Z test_end_utc=2026-03-07T00:00:00Z train_bouts=1800 test_bouts=24 log_loss=0.63596605 brier_score=0.22232131 hit_rate=0.64583333 calibration_ece=0.07174994 calibration_mce=0.27729316
+calibration_bins
+bin=0 range=[0.00,0.10) count=0 avg_pred=n/a observed=n/a abs_error=n/a
+bin=1 range=[0.10,0.20) count=0 avg_pred=n/a observed=n/a abs_error=n/a
+bin=2 range=[0.20,0.30) count=34 avg_pred=0.27225152 observed=0.26470588 abs_error=0.00754564
+bin=3 range=[0.30,0.40) count=277 avg_pred=0.36352458 observed=0.36101083 abs_error=0.00251375
+bin=4 range=[0.40,0.50) count=1145 avg_pred=0.45964862 observed=0.44017467 abs_error=0.01947395
+bin=5 range=[0.50,0.60) count=1481 avg_pred=0.53119671 observed=0.54625253 abs_error=0.01505582
+bin=6 range=[0.60,0.70) count=277 avg_pred=0.63647542 observed=0.63898917 abs_error=0.00251375
+bin=7 range=[0.70,0.80) count=34 avg_pred=0.72774848 observed=0.73529412 abs_error=0.00754564
+bin=8 range=[0.80,0.90) count=0 avg_pred=n/a observed=n/a abs_error=n/a
+bin=9 range=[0.90,1.00) count=0 avg_pred=n/a observed=n/a abs_error=n/a

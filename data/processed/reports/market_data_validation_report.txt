@@ -1,0 +1,30 @@
+market_data_validation_report
+promotion=UFC
+source_system=all
+market_rows=455568
+completed_fights=1824
+matched_fights=1508
+unmatched_fights=316
+match_rate=0.82675439
+coverage_by_year
+year=2022 completed_fights=216 matched_fights=188 coverage=0.87037037
+year=2023 completed_fights=504 matched_fights=413 coverage=0.81944444
+year=2024 completed_fights=513 matched_fights=424 coverage=0.82651072
+year=2025 completed_fights=515 matched_fights=421 coverage=0.81747573
+year=2026 completed_fights=76 matched_fights=62 coverage=0.81578947
+opening_odds_coverage_by_year
+year=2022 covered_fights=188 total_fights=216 coverage=0.87037037
+year=2023 covered_fights=413 total_fights=504 coverage=0.81944444
+year=2024 covered_fights=424 total_fights=513 coverage=0.82651072
+year=2025 covered_fights=421 total_fights=515 coverage=0.81747573
+year=2026 covered_fights=62 total_fights=76 coverage=0.81578947
+opening_odds_coverage covered_fights=1508 total_fights=1824 coverage=0.82675439
+closing_odds_coverage covered_fights=1508 total_fights=1824 coverage=0.82675439 closing_available_fights=1508
+closing_odds_coverage_by_year
+year=2022 covered_fights=188 total_fights=216 coverage=0.87037037 closing_available_fights=188
+year=2023 covered_fights=413 total_fights=504 coverage=0.81944444 closing_available_fights=413
+year=2024 covered_fights=424 total_fights=513 coverage=0.82651072 closing_available_fights=424
+year=2025 covered_fights=421 total_fights=515 coverage=0.81747573 closing_available_fights=421
+year=2026 covered_fights=62 total_fights=76 coverage=0.81578947 closing_available_fights=62
+unmatched_rows_by_reason
+not_available

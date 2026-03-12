@@ -1,0 +1,77 @@
+data_coverage_audit_report
+promotion=UFC
+coverage_totals
+total_events=153
+total_completed_bouts=1824
+total_fighters=992
+total_fighter_bout_stats_rows=3738
+bout_stats_coverage_totals
+completed_bouts=1824
+bouts_with_two_stats_rows=1824
+bouts_with_one_stats_row=0
+bouts_with_zero_stats_rows=0
+bout_stats_coverage_by_year
+year=2022 completed_bouts=216 bouts_with_two_stats_rows=216 bouts_with_one_stats_row=0 bouts_with_zero_stats_rows=0
+year=2023 completed_bouts=504 bouts_with_two_stats_rows=504 bouts_with_one_stats_row=0 bouts_with_zero_stats_rows=0
+year=2024 completed_bouts=513 bouts_with_two_stats_rows=513 bouts_with_one_stats_row=0 bouts_with_zero_stats_rows=0
+year=2025 completed_bouts=515 bouts_with_two_stats_rows=515 bouts_with_one_stats_row=0 bouts_with_zero_stats_rows=0
+year=2026 completed_bouts=76 bouts_with_two_stats_rows=76 bouts_with_one_stats_row=0 bouts_with_zero_stats_rows=0
+bout_stats_parser_path_proxy
+rows_with_empty_stats_shape=28
+rows_with_event_details_fallback_shape=3606
+rows_with_fight_details_shape=104
+feature_coverage
+feature=fighter_age_years coverage=1.00000000 missing=0
+feature=height_diff_cm coverage=1.00000000 missing=0
+feature=reach_diff_cm coverage=1.00000000 missing=0
+feature=days_since_last_fight coverage=0.74424826 missing=956
+feature=recent_form_win_rate_l3 coverage=0.74424826 missing=956
+feature=opponent_strength_avg_l3 coverage=0.57758159 missing=1579
+feature=finish_rate_all coverage=0.74424826 missing=956
+feature=decision_rate_all coverage=0.74424826 missing=956
+feature=sig_strikes_landed_per_min_all coverage=0.74424826 missing=956
+feature=sig_striking_accuracy_all coverage=0.74424826 missing=956
+feature=sig_striking_defense_all coverage=0.74424826 missing=956
+feature=takedown_attempts_per_15m_all coverage=0.74424826 missing=956
+feature=takedown_accuracy_all coverage=0.74424826 missing=956
+feature=takedown_defense_all coverage=0.74424826 missing=956
+feature=submission_attempts_per_15m_all coverage=0.74424826 missing=956
+feature=avg_fight_duration_seconds_all coverage=0.74424826 missing=956
+feature=rematch_flag coverage=1.00000000 missing=0
+feature=weight_class_experience coverage=1.00000000 missing=0
+feature_missingness_reasons
+feature=fighter_age_years reason=none count=0
+feature=height_diff_cm reason=none count=0
+feature=reach_diff_cm reason=none count=0
+feature=days_since_last_fight reason=no_prior_fights count=956
+feature=recent_form_win_rate_l3 reason=no_prior_fights count=956
+feature=opponent_strength_avg_l3 reason=no_prior_fights count=956
+feature=opponent_strength_avg_l3 reason=insufficient_prior_fights_l3 count=606
+feature=opponent_strength_avg_l3 reason=missing_recent_window_stats count=17
+feature=finish_rate_all reason=no_prior_fights count=956
+feature=decision_rate_all reason=no_prior_fights count=956
+feature=sig_strikes_landed_per_min_all reason=no_prior_fights count=956
+feature=sig_striking_accuracy_all reason=no_prior_fights count=956
+feature=sig_striking_defense_all reason=no_prior_fights count=956
+feature=takedown_attempts_per_15m_all reason=no_prior_fights count=956
+feature=takedown_accuracy_all reason=no_prior_fights count=956
+feature=takedown_defense_all reason=no_prior_fights count=956
+feature=submission_attempts_per_15m_all reason=no_prior_fights count=956
+feature=avg_fight_duration_seconds_all reason=no_prior_fights count=956
+feature=rematch_flag reason=none count=0
+feature=weight_class_experience reason=none count=0
+earliest_latest_dates
+table=events earliest=2022-07-23T00:00:00Z latest=2026-03-14T00:00:00Z
+table=bouts earliest=2022-07-23T00:00:00Z latest=2026-03-14T00:00:00Z
+table=fighter_bout_stats earliest=2022-07-23T00:00:00Z latest=2026-03-14T00:00:00Z
+table=markets earliest=2022-07-22T23:47:43Z latest=2026-03-12T18:23:24Z
+table=model_predictions earliest=2026-03-12T12:04:59Z latest=2026-03-12T19:16:06Z
+join_matching_failures
+bouts_missing_blue_fighter=0
+bouts_missing_red_fighter=0
+bouts_without_two_stats_rows=0
+expected_feature_rows_from_bouts=3738
+feature_rows_total=3738
+feature_rows_without_bout_fighter_match=0
+fighter_bout_stats_missing_fighter=0
+fighter_bout_stats_missing_opponent=0

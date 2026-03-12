@@ -1,0 +1,34 @@
+baseline_report
+bouts_scored=365
+train_test_boundaries
+train_start_utc=2022-07-23T00:00:00Z
+train_end_utc=2025-06-07T00:00:00Z
+test_start_utc=2025-06-07T00:00:00Z
+test_end_utc=2026-03-07T00:00:00Z
+model_coverage
+market_implied_probability: scored_rows=600 eligible_rows=730 coverage=0.821918
+elo_logistic: scored_rows=730 eligible_rows=730 coverage=1.000000
+tabular_logistic: scored_rows=730 eligible_rows=730 coverage=1.000000
+tabular_tree_stump: scored_rows=730 eligible_rows=730 coverage=1.000000
+feature_coverage
+avg_fight_duration_seconds_all: coverage=0.897260
+days_since_last_fight: coverage=0.897260
+decision_rate_all: coverage=0.897260
+fighter_age_years: coverage=1.000000
+finish_rate_all: coverage=0.897260
+height_diff_cm: coverage=1.000000
+opponent_strength_avg_l3: coverage=0.873973
+opponent_strength_avg_l5: coverage=0.873973
+prior_fight_count: coverage=1.000000
+reach_diff_cm: coverage=1.000000
+recent_form_win_rate_l3: coverage=0.897260
+recent_form_win_rate_l5: coverage=0.897260
+rematch_flag: coverage=1.000000
+sig_strikes_landed_per_min_all: coverage=0.897260
+sig_striking_accuracy_all: coverage=0.897260
+sig_striking_defense_all: coverage=0.897260
+submission_attempts_per_15m_all: coverage=0.897260
+takedown_accuracy_all: coverage=0.897260
+takedown_attempts_per_15m_all: coverage=0.897260
+takedown_defense_all: coverage=0.897260
+weight_class_experience: coverage=1.000000

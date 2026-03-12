@@ -1,0 +1,16 @@
+ablation_comparison_report
+model_run_id=ablation_2026-03-12T22:26:39Z
+window_type=expanding
+fold_count=33
+scenarios=10
+scenario_metrics
+rank=1 scenario_id=market_only_no_interactions groups=market interactions=0 predictions=3248 log_loss=0.61019774 brier_score=0.21178692 hit_rate=0.65024631 calibration_ece=0.02416445
+rank=2 scenario_id=market_only_with_interactions groups=market interactions=1 predictions=3248 log_loss=0.61019774 brier_score=0.21178692 hit_rate=0.65024631 calibration_ece=0.02416445
+rank=3 scenario_id=features_elo_market_no_interactions groups=features,elo,market interactions=0 predictions=3248 log_loss=0.61507293 brier_score=0.21334385 hit_rate=0.65886700 calibration_ece=0.02378657
+rank=4 scenario_id=features_elo_market_with_interactions groups=features,elo,market interactions=1 predictions=3248 log_loss=0.61986378 brier_score=0.21465911 hit_rate=0.65455665 calibration_ece=0.02112788
+rank=5 scenario_id=elo_only_no_interactions groups=elo interactions=0 predictions=3248 log_loss=0.67923363 brier_score=0.24314469 hit_rate=0.57081281 calibration_ece=0.01431683
+rank=6 scenario_id=elo_only_with_interactions groups=elo interactions=1 predictions=3248 log_loss=0.67923363 brier_score=0.24314469 hit_rate=0.57081281 calibration_ece=0.01431683
+rank=7 scenario_id=features_elo_no_interactions groups=features,elo interactions=0 predictions=3248 log_loss=0.68290739 brier_score=0.24445146 hit_rate=0.55449507 calibration_ece=0.01818977
+rank=8 scenario_id=features_elo_with_interactions groups=features,elo interactions=1 predictions=3248 log_loss=0.68662703 brier_score=0.24602883 hit_rate=0.54926108 calibration_ece=0.02099638
+rank=9 scenario_id=features_only_no_interactions groups=features interactions=0 predictions=3248 log_loss=0.69243899 brier_score=0.24912520 hit_rate=0.52432266 calibration_ece=0.01636377
+rank=10 scenario_id=features_only_with_interactions groups=features interactions=1 predictions=3248 log_loss=0.69243899 brier_score=0.24912520 hit_rate=0.52432266 calibration_ece=0.01636377

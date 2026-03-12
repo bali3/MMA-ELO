@@ -1,0 +1,4613 @@
+===== src/ingestion/sources/ufc_stats.py =====
+"""Live UFC Stats ingestion for fighter metadata, events, and bout stats.
+
+Scope constraints:
+- UFC Stats source only
+- ingestion only (no features, ratings, or modeling)
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import re
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Mapping, Sequence
+from urllib.request import Request, urlopen
+
+from ingestion.contracts import (
+    Fetcher,
+    NormalizedRow,
+    Normalizer,
+    ParsedIngestionRecord,
+    Parser,
+    PersistResult,
+    Persister,
+    RawIngestionRecord,
+)
+from ingestion.db_init import initialize_sqlite_database
+
+LOGGER = logging.getLogger(__name__)
+
+UFC_STATS_SOURCE = "ufc_stats"
+UFC_STATS_COMPLETED_EVENTS_URL = "http://ufcstats.com/statistics/events/completed?page=all"
+UFC_STATS_FIGHTERS_INDEX_TEMPLATE = "http://ufcstats.com/statistics/fighters?char={letter}&page=all"
+UFC_STATS_FIGHTER_LIST_LETTERS = tuple("abcdefghijklmnopqrstuvwxyz")
+
+_EVENT_LINK_RE = re.compile(
+    r'<a[^>]+href="(?P<url>http://ufcstats\.com/event-details/(?P<id>[a-z0-9]+))"[^>]*>'
+    r'(?P<name>.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+_EVENT_DATE_NEAR_LINK_RE = re.compile(
+    r'event-details/(?P<id>[a-z0-9]+).*?b-statistics__date">\s*(?P<date>[^<]+?)\s*</span>',
+    re.IGNORECASE | re.DOTALL,
+)
+_EVENT_NAME_RE = re.compile(
+    r'b-content__title-highlight[^>]*>\s*(?P<name>[^<]+?)\s*</span>',
+    re.IGNORECASE | re.DOTALL,
+)
+_EVENT_DETAIL_ITEM_RE = re.compile(
+    r'<li[^>]*b-list__box-list-item[^>]*>\s*(?P<label>[A-Za-z ]+):\s*(?P<value>.*?)\s*</li>',
+    re.IGNORECASE | re.DOTALL,
+)
+_BOUT_ROW_RE = re.compile(
+    r'<tr[^>]*b-fight-details__table-row[^>]*data-link="(?P<url>http://ufcstats\.com/fight-details/(?P<id>[a-z0-9]+))"[^>]*>'
+    r'(?P<body>.*?)</tr>',
+    re.IGNORECASE | re.DOTALL,
+)
+_TD_RE = re.compile(r"<td[^>]*>(?P<value>.*?)</td>", re.IGNORECASE | re.DOTALL)
+_FIGHTER_LINK_RE = re.compile(
+    r'<a[^>]+href="(?P<url>http://ufcstats\.com/fighter-details/(?P<id>[a-z0-9]+))"[^>]*>'
+    r'(?P<name>.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+_FIGHTER_TABLE_ROW_RE = re.compile(
+    r'<tr[^>]*b-statistics__table-row[^>]*>(?P<body>.*?)</tr>',
+    re.IGNORECASE | re.DOTALL,
+)
+_FIGHTER_PROFILE_NAME_RE = re.compile(
+    r'b-content__title-highlight[^>]*>\s*(?P<name>.*?)\s*</span>',
+    re.IGNORECASE | re.DOTALL,
+)
+_FIGHTER_PROFILE_ITEM_RE = re.compile(
+    r'<li[^>]*b-list__box-list-item[^>]*>.*?'
+    r'<i[^>]*>\s*(?P<label>[A-Za-z ]+):\s*</i>\s*(?P<value>.*?)\s*</li>',
+    re.IGNORECASE | re.DOTALL,
+)
+_FIGHT_DETAILS_TABLE_RE = re.compile(
+    r'<table[^>]*class="[^"]*b-fight-details__table[^"]*"[^>]*>(?P<body>.*?)</table>',
+    re.IGNORECASE | re.DOTALL,
+)
+_TH_RE = re.compile(r"<th[^>]*>(?P<value>.*?)</th>", re.IGNORECASE | re.DOTALL)
+_TR_RE = re.compile(r"<tr[^>]*>(?P<body>.*?)</tr>", re.IGNORECASE | re.DOTALL)
+_P_RE = re.compile(r"<p[^>]*>(?P<value>.*?)</p>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+_SPACE_RE = re.compile(r"\s+")
+
+
+@dataclass(frozen=True)
+class CompletedEventReference:
+    """Reference for an event listed on UFC Stats completed events page."""
+
+    event_id: str
+    event_url: str
+    event_name: str
+    event_date_text: str | None
+
+
+@dataclass(frozen=True)
+class FighterIndexReference:
+    """Reference for a fighter listed on UFC Stats fighter index pages."""
+
+    fighter_id: str
+    fighter_url: str
+    full_name: str | None
+
+
+@dataclass(frozen=True)
+class ArchivedResponse:
+    """Metadata for an archived HTTP response body."""
+
+    archive_path: Path
+    payload_sha256: str
+
+
+class UFCStatsFighterMetadataFetcher(Fetcher):
+    """Fetch UFC Stats fighter index + profile pages and archive raw HTML payloads."""
+
+    source_system = UFC_STATS_SOURCE
+
+    def __init__(
+        self,
+        *,
+        raw_root: Path,
+        timeout_seconds: int = 30,
+        user_agent: str = "mma-elo-ingestion/0.1",
+        fighter_limit: int | None = None,
+        index_letters: Sequence[str] = UFC_STATS_FIGHTER_LIST_LETTERS,
+    ) -> None:
+        self._raw_root = raw_root
+        self._timeout_seconds = timeout_seconds
+        self._user_agent = user_agent
+        self._fighter_limit = fighter_limit
+        self._index_letters = tuple(letter.lower() for letter in index_letters if letter.strip())
+
+    def fetch(self, *, as_of_utc: datetime | None = None) -> Sequence[RawIngestionRecord]:
+        """Fetch and archive fighter index and profile pages."""
+
+        del as_of_utc
+        fetched_at = datetime.now(timezone.utc)
+        refs_by_id: dict[str, FighterIndexReference] = {}
+
+        for letter in self._index_letters:
+            index_url = UFC_STATS_FIGHTERS_INDEX_TEMPLATE.format(letter=letter)
+            index_html = self._http_get_text(index_url)
+            archived_index = archive_raw_response(
+                raw_root=self._raw_root,
+                fetched_at_utc=fetched_at,
+                source_system=self.source_system,
+                url=index_url,
+                payload_text=index_html,
+            )
+
+            page_refs = parse_fighters_index_page(index_html)
+            for ref in page_refs:
+                if ref.fighter_id not in refs_by_id:
+                    refs_by_id[ref.fighter_id] = ref
+
+            LOGGER.info(
+                "ufc_stats.fighter_metadata.fetch.index_page",
+                extra={
+                    "letter": letter,
+                    "fighters_found": len(page_refs),
+                    "archive_path": str(archived_index.archive_path),
+                },
+            )
+
+        fighter_refs = sorted(refs_by_id.values(), key=lambda value: value.fighter_id)
+        if self._fighter_limit is not None:
+            fighter_refs = fighter_refs[: self._fighter_limit]
+
+        records: list[RawIngestionRecord] = []
+        for ref in fighter_refs:
+            profile_html = self._http_get_text(ref.fighter_url)
+            archived_profile = archive_raw_response(
+                raw_root=self._raw_root,
+                fetched_at_utc=fetched_at,
+                source_system=self.source_system,
+                url=ref.fighter_url,
+                payload_text=profile_html,
+            )
+            payload = {
+                "fighter_id": ref.fighter_id,
+                "fighter_url": ref.fighter_url,
+                "full_name_from_index": ref.full_name,
+                "archive_path": archived_profile.archive_path.as_posix(),
+                "html": profile_html,
+            }
+            records.append(
+                RawIngestionRecord(
+                    source_system=self.source_system,
+                    source_record_id=f"fighter_profile:{ref.fighter_id}",
+                    fetched_at_utc=fetched_at,
+                    payload=payload,
+                    payload_sha256=archived_profile.payload_sha256,
+                    idempotency_key=_stable_sha256(
+                        f"{self.source_system}|fighter_profile|{ref.fighter_id}|{archived_profile.payload_sha256}"
+                    ),
+                )
+            )
+
+        LOGGER.info(
+            "ufc_stats.fighter_metadata.fetch.fighter_profiles",
+            extra={"records_fetched": len(records)},
+        )
+        return tuple(records)
+
+    def _http_get_text(self, url: str) -> str:
+        request = Request(url=url, headers={"User-Agent": self._user_agent})
+        with urlopen(request, timeout=self._timeout_seconds) as response:
+            payload = response.read()
+        return payload.decode("utf-8", errors="replace")
+
+
+class UFCStatsFighterMetadataParser(Parser):
+    """Parse raw UFC Stats fighter profile pages into structured fighter metadata."""
+
+    def parse(self, records: Sequence[RawIngestionRecord]) -> Sequence[ParsedIngestionRecord]:
+        parsed: list[ParsedIngestionRecord] = []
+        for record in records:
+            html = str(record.payload.get("html", ""))
+            fighter_id = str(record.payload.get("fighter_id", "")).strip().lower()
+            fighter_url = str(record.payload.get("fighter_url", "")).strip()
+            if not fighter_id or not html:
+                continue
+
+            parsed_payload = parse_fighter_profile_page(
+                fighter_id=fighter_id,
+                fighter_url=fighter_url,
+                fighter_html=html,
+                fallback_full_name=_as_optional_str(record.payload.get("full_name_from_index")),
+            )
+            parsed.append(
+                ParsedIngestionRecord(
+                    source_system=record.source_system,
+                    source_record_id=record.source_record_id,
+                    parsed_payload=parsed_payload,
+                    payload_sha256=record.payload_sha256,
+                    idempotency_key=record.idempotency_key,
+                )
+            )
+
+        LOGGER.info(
+            "ufc_stats.fighter_metadata.parse.fighter_profiles",
+            extra={"records_parsed": len(parsed)},
+        )
+        return tuple(parsed)
+
+
+class UFCStatsFighterMetadataNormalizer(Normalizer):
+    """Normalize parsed fighter metadata into canonical fighters rows."""
+
+    def normalize(self, records: Sequence[ParsedIngestionRecord]) -> Sequence[NormalizedRow]:
+        normalized_rows: list[NormalizedRow] = []
+        now_utc = _utc_now_iso()
+
+        for record in records:
+            parsed = record.parsed_payload
+            fighter_id = _as_optional_str(parsed.get("fighter_id"))
+            full_name = _as_optional_str(parsed.get("full_name"))
+            if not fighter_id or not full_name:
+                continue
+
+            fighter_payload = {
+                "fighter_id": fighter_id,
+                "full_name": full_name,
+                "date_of_birth_utc": _as_optional_str(parsed.get("date_of_birth_utc")),
+                "nationality": _as_optional_str(parsed.get("nationality")),
+                "stance": _as_optional_str(parsed.get("stance")),
+                "height_cm": _as_optional_float(parsed.get("height_cm")),
+                "reach_cm": _as_optional_float(parsed.get("reach_cm")),
+            }
+            payload_sha = _stable_sha256(json.dumps(fighter_payload, sort_keys=True))
+            source_record_id = f"fighter:{fighter_id}"
+
+            normalized_rows.append(
+                NormalizedRow(
+                    table_name="fighters",
+                    primary_key=fighter_id,
+                    data={
+                        **fighter_payload,
+                        "source_system": record.source_system,
+                        "source_record_id": source_record_id,
+                        "source_updated_at_utc": None,
+                        "source_payload_sha256": payload_sha,
+                        "ingested_at_utc": now_utc,
+                        "created_at_utc": now_utc,
+                        "updated_at_utc": now_utc,
+                    },
+                    source_system=record.source_system,
+                    source_record_id=source_record_id,
+                    payload_sha256=payload_sha,
+                    idempotency_key=_stable_sha256(
+                        f"{record.source_system}|fighters|{source_record_id}|{payload_sha}"
+                    ),
+                )
+            )
+
+        normalized_rows.sort(key=lambda row: row.primary_key)
+        LOGGER.info(
+            "ufc_stats.fighter_metadata.normalize.rows",
+            extra={"normalized_rows": len(normalized_rows)},
+        )
+        return tuple(normalized_rows)
+
+
+class UFCStatsFetcher(Fetcher):
+    """Fetch completed UFC Stats event pages and archive raw HTML payloads."""
+
+    source_system = UFC_STATS_SOURCE
+
+    def __init__(
+        self,
+        *,
+        raw_root: Path,
+        completed_events_url: str = UFC_STATS_COMPLETED_EVENTS_URL,
+        timeout_seconds: int = 30,
+        user_agent: str = "mma-elo-ingestion/0.1",
+        event_limit: int | None = None,
+    ) -> None:
+        self._raw_root = raw_root
+        self._completed_events_url = completed_events_url
+        self._timeout_seconds = timeout_seconds
+        self._user_agent = user_agent
+        self._event_limit = event_limit
+
+    def fetch(self, *, as_of_utc: datetime | None = None) -> Sequence[RawIngestionRecord]:
+        """Fetch and archive completed events list + event detail pages."""
+
+        fetched_at = datetime.now(timezone.utc)
+        completed_html = self._http_get_text(self._completed_events_url)
+        completed_archive = archive_raw_response(
+            raw_root=self._raw_root,
+            fetched_at_utc=fetched_at,
+            source_system=self.source_system,
+            url=self._completed_events_url,
+            payload_text=completed_html,
+        )
+
+        event_refs = parse_completed_events_index(completed_html)
+        if as_of_utc is not None:
+            event_refs = [ref for ref in event_refs if _event_is_not_after(ref.event_date_text, as_of_utc)]
+
+        if self._event_limit is not None:
+            event_refs = event_refs[: self._event_limit]
+
+        LOGGER.info(
+            "ufc_stats.fetch.completed_index",
+            extra={
+                "events_found": len(event_refs),
+                "completed_events_archive": str(completed_archive.archive_path),
+            },
+        )
+
+        records: list[RawIngestionRecord] = []
+        for event_ref in event_refs:
+            event_html = self._http_get_text(event_ref.event_url)
+            archived = archive_raw_response(
+                raw_root=self._raw_root,
+                fetched_at_utc=fetched_at,
+                source_system=self.source_system,
+                url=event_ref.event_url,
+                payload_text=event_html,
+            )
+            payload = {
+                "event_url": event_ref.event_url,
+                "event_id": event_ref.event_id,
+                "event_name_from_index": event_ref.event_name,
+                "event_date_from_index": event_ref.event_date_text,
+                "archive_path": archived.archive_path.as_posix(),
+                "html": event_html,
+            }
+            records.append(
+                RawIngestionRecord(
+                    source_system=self.source_system,
+                    source_record_id=f"event_page:{event_ref.event_id}",
+                    fetched_at_utc=fetched_at,
+                    payload=payload,
+                    payload_sha256=archived.payload_sha256,
+                    idempotency_key=_stable_sha256(
+                        f"{self.source_system}|event_page|{event_ref.event_id}|{archived.payload_sha256}"
+                    ),
+                )
+            )
+
+        LOGGER.info(
+            "ufc_stats.fetch.completed_events",
+            extra={"records_fetched": len(records), "source": self.source_system},
+        )
+        return tuple(records)
+
+    def _http_get_text(self, url: str) -> str:
+        request = Request(url=url, headers={"User-Agent": self._user_agent})
+        with urlopen(request, timeout=self._timeout_seconds) as response:
+            payload = response.read()
+        return payload.decode("utf-8", errors="replace")
+
+
+class UFCStatsParser(Parser):
+    """Parse raw UFC Stats event pages into deterministic event+bout records."""
+
+    def parse(self, records: Sequence[RawIngestionRecord]) -> Sequence[ParsedIngestionRecord]:
+        parsed: list[ParsedIngestionRecord] = []
+        for record in records:
+            html = str(record.payload.get("html", ""))
+            event_url = str(record.payload.get("event_url", ""))
+            event_id = str(record.payload.get("event_id", "")).strip().lower()
+            if not event_id or not html:
+                LOGGER.warning(
+                    "ufc_stats.parse.skip_invalid_raw_record",
+                    extra={"source_record_id": record.source_record_id},
+                )
+                continue
+
+            parsed_payload = parse_event_page(
+                event_id=event_id,
+                event_url=event_url,
+                event_html=html,
+                fallback_event_name=_as_optional_str(record.payload.get("event_name_from_index")),
+                fallback_event_date=_as_optional_str(record.payload.get("event_date_from_index")),
+            )
+            parsed.append(
+                ParsedIngestionRecord(
+                    source_system=record.source_system,
+                    source_record_id=record.source_record_id,
+                    parsed_payload=parsed_payload,
+                    payload_sha256=record.payload_sha256,
+                    idempotency_key=record.idempotency_key,
+                )
+            )
+
+        LOGGER.info("ufc_stats.parse.events", extra={"records_parsed": len(parsed)})
+        return tuple(parsed)
+
+
+class UFCStatsBoutStatsFetcher(Fetcher):
+    """Fetch completed UFC event pages and linked fight-details pages."""
+
+    source_system = UFC_STATS_SOURCE
+
+    def __init__(
+        self,
+        *,
+        raw_root: Path,
+        completed_events_url: str = UFC_STATS_COMPLETED_EVENTS_URL,
+        timeout_seconds: int = 30,
+        user_agent: str = "mma-elo-ingestion/0.1",
+        event_limit: int | None = None,
+    ) -> None:
+        self._raw_root = raw_root
+        self._completed_events_url = completed_events_url
+        self._timeout_seconds = timeout_seconds
+        self._user_agent = user_agent
+        self._event_limit = event_limit
+
+    def fetch(self, *, as_of_utc: datetime | None = None) -> Sequence[RawIngestionRecord]:
+        """Fetch and archive fight-details pages with event+bout provenance."""
+
+        fetched_at = datetime.now(timezone.utc)
+        completed_html = self._http_get_text(self._completed_events_url)
+        completed_archive = archive_raw_response(
+            raw_root=self._raw_root,
+            fetched_at_utc=fetched_at,
+            source_system=self.source_system,
+            url=self._completed_events_url,
+            payload_text=completed_html,
+        )
+
+        event_refs = parse_completed_events_index(completed_html)
+        if as_of_utc is not None:
+            event_refs = [ref for ref in event_refs if _event_is_not_after(ref.event_date_text, as_of_utc)]
+        if self._event_limit is not None:
+            event_refs = event_refs[: self._event_limit]
+
+        LOGGER.info(
+            "ufc_stats.bout_stats.fetch.completed_index",
+            extra={
+                "events_found": len(event_refs),
+                "completed_events_archive": str(completed_archive.archive_path),
+            },
+        )
+
+        raw_records: list[RawIngestionRecord] = []
+        for event_ref in event_refs:
+            event_html = self._http_get_text(event_ref.event_url)
+            archived_event = archive_raw_response(
+                raw_root=self._raw_root,
+                fetched_at_utc=fetched_at,
+                source_system=self.source_system,
+                url=event_ref.event_url,
+                payload_text=event_html,
+            )
+            parsed_event = parse_event_page(
+                event_id=event_ref.event_id,
+                event_url=event_ref.event_url,
+                event_html=event_html,
+                fallback_event_name=event_ref.event_name,
+                fallback_event_date=event_ref.event_date_text,
+            )
+            bouts = parsed_event.get("bouts")
+            if not isinstance(bouts, Sequence):
+                continue
+
+            for bout_obj in bouts:
+                if not isinstance(bout_obj, Mapping):
+                    continue
+                bout_id = _as_optional_str(bout_obj.get("bout_id"))
+                fight_url = _as_optional_str(bout_obj.get("fight_url"))
+                red_id = _as_optional_str(bout_obj.get("fighter_red_id"))
+                blue_id = _as_optional_str(bout_obj.get("fighter_blue_id"))
+                if not bout_id or not fight_url or not red_id or not blue_id or red_id == blue_id:
+                    continue
+                fight_html: str | None = None
+                archive_path: str | None = None
+                payload_sha: str | None = None
+                source_page_type = "event_details_fallback"
+                try:
+                    fight_html = self._http_get_text(fight_url)
+                    archived_fight = archive_raw_response(
+                        raw_root=self._raw_root,
+                        fetched_at_utc=fetched_at,
+                        source_system=self.source_system,
+                        url=fight_url,
+                        payload_text=fight_html,
+                    )
+                    archive_path = archived_fight.archive_path.as_posix()
+                    payload_sha = archived_fight.payload_sha256
+                    source_page_type = "fight_details"
+                except Exception as exc:  # noqa: BLE001 - network/parser fallback boundary
+                    LOGGER.warning(
+                        "ufc_stats.bout_stats.fetch.fight_page_failed",
+                        extra={"bout_id": bout_id, "fight_url": fight_url, "error": str(exc)},
+                    )
+
+                payload = {
+                    "event_id": parsed_event.get("event_id"),
+                    "event_url": parsed_event.get("event_url"),
+                    "event_name": parsed_event.get("event_name"),
+                    "event_date_utc": parsed_event.get("event_date_utc"),
+                    "venue": parsed_event.get("venue"),
+                    "city": parsed_event.get("city"),
+                    "region": parsed_event.get("region"),
+                    "country": parsed_event.get("country"),
+                    "event_archive_path": archived_event.archive_path.as_posix(),
+                    "bout_id": bout_id,
+                    "fight_url": fight_url,
+                    "bout_order": bout_obj.get("bout_order"),
+                    "fighter_red_id": red_id,
+                    "fighter_red_name": bout_obj.get("fighter_red_name"),
+                    "fighter_blue_id": blue_id,
+                    "fighter_blue_name": bout_obj.get("fighter_blue_name"),
+                    "winner_fighter_id": bout_obj.get("winner_fighter_id"),
+                    "result_method": bout_obj.get("result_method"),
+                    "result_round": bout_obj.get("result_round"),
+                    "result_time": bout_obj.get("result_time"),
+                    "scheduled_rounds": bout_obj.get("scheduled_rounds"),
+                    "weight_class": bout_obj.get("weight_class"),
+                    "event_row_fighter_bout_stats": bout_obj.get("event_row_fighter_bout_stats"),
+                    "source_page_type": source_page_type,
+                    "archive_path": archive_path,
+                    "html": fight_html,
+                }
+                payload_text = (
+                    fight_html
+                    if fight_html is not None
+                    else json.dumps(
+                        {
+                            "event_id": payload["event_id"],
+                            "bout_id": payload["bout_id"],
+                            "event_row_fighter_bout_stats": payload["event_row_fighter_bout_stats"],
+                            "source_page_type": source_page_type,
+                        },
+                        sort_keys=True,
+                    )
+                )
+                raw_records.append(
+                    RawIngestionRecord(
+                        source_system=self.source_system,
+                        source_record_id=f"fight_page:{bout_id}",
+                        fetched_at_utc=fetched_at,
+                        payload=payload,
+                        payload_sha256=payload_sha or _stable_sha256(payload_text),
+                        idempotency_key=_stable_sha256(
+                            f"{self.source_system}|fight_page|{bout_id}|{payload_sha or _stable_sha256(payload_text)}"
+                        ),
+                    )
+                )
+
+        LOGGER.info(
+            "ufc_stats.bout_stats.fetch.fight_pages",
+            extra={"records_fetched": len(raw_records)},
+        )
+        return tuple(raw_records)
+
+    def _http_get_text(self, url: str) -> str:
+        request = Request(url=url, headers={"User-Agent": self._user_agent})
+        with urlopen(request, timeout=self._timeout_seconds) as response:
+            payload = response.read()
+        return payload.decode("utf-8", errors="replace")
+
+
+class UFCStatsBoutStatsParser(Parser):
+    """Parse fight-details pages into per-fighter per-bout stat rows."""
+
+    def parse(self, records: Sequence[RawIngestionRecord]) -> Sequence[ParsedIngestionRecord]:
+        parsed: list[ParsedIngestionRecord] = []
+        for record in records:
+            html_value = record.payload.get("html")
+            html = str(html_value) if html_value is not None else ""
+            bout_id = _as_optional_str(record.payload.get("bout_id"))
+            fight_url = _as_optional_str(record.payload.get("fight_url"))
+            red_id = _as_optional_str(record.payload.get("fighter_red_id"))
+            blue_id = _as_optional_str(record.payload.get("fighter_blue_id"))
+            if not bout_id or not red_id or not blue_id:
+                continue
+
+            fallback_event_stats = _coerce_event_row_fighter_stats(
+                value=record.payload.get("event_row_fighter_bout_stats"),
+                red_id=red_id,
+                blue_id=blue_id,
+            )
+            if html and fight_url:
+                parsed_fight = parse_fight_details_page(
+                    bout_id=bout_id,
+                    fight_url=fight_url,
+                    fight_html=html,
+                    fighter_red_id=red_id,
+                    fighter_blue_id=blue_id,
+                )
+                stats_source_type = "fight_details"
+            elif fallback_event_stats is not None:
+                parsed_fight = {
+                    "bout_id": bout_id,
+                    "fight_url": fight_url,
+                    "fighter_bout_stats": fallback_event_stats,
+                }
+                stats_source_type = "event_details_fallback"
+            else:
+                parsed_fight = {
+                    "bout_id": bout_id,
+                    "fight_url": fight_url,
+                    "fighter_bout_stats": (
+                        _empty_fighter_bout_stats(fighter_id=red_id, opponent_id=blue_id, corner="red"),
+                        _empty_fighter_bout_stats(fighter_id=blue_id, opponent_id=red_id, corner="blue"),
+                    ),
+                }
+                stats_source_type = "empty_stats_fallback"
+            parsed_payload = {
+                "event_id": _as_optional_str(record.payload.get("event_id")),
+                "event_url": _as_optional_str(record.payload.get("event_url")),
+                "event_name": _as_optional_str(record.payload.get("event_name")),
+                "event_date_utc": _as_optional_str(record.payload.get("event_date_utc")),
+                "venue": _as_optional_str(record.payload.get("venue")),
+                "city": _as_optional_str(record.payload.get("city")),
+                "region": _as_optional_str(record.payload.get("region")),
+                "country": _as_optional_str(record.payload.get("country")),
+                "fighters": [
+                    {
+                        "fighter_id": red_id,
+                        "full_name": _as_optional_str(record.payload.get("fighter_red_name")),
+                    },
+                    {
+                        "fighter_id": blue_id,
+                        "full_name": _as_optional_str(record.payload.get("fighter_blue_name")),
+                    },
+                ],
+                "bout": {
+                    "bout_id": bout_id,
+                    "fight_url": fight_url,
+                    "bout_order": _as_optional_int(record.payload.get("bout_order")),
+                    "fighter_red_id": red_id,
+                    "fighter_blue_id": blue_id,
+                    "winner_fighter_id": _as_optional_str(record.payload.get("winner_fighter_id")),
+                    "result_method": _as_optional_str(record.payload.get("result_method")),
+                    "result_round": _as_optional_int(record.payload.get("result_round")),
+                    "result_time": _as_optional_str(record.payload.get("result_time")),
+                    "scheduled_rounds": _as_optional_int(record.payload.get("scheduled_rounds")),
+                    "weight_class": _as_optional_str(record.payload.get("weight_class")),
+                    "stats_source_type": _as_optional_str(record.payload.get("source_page_type")) or stats_source_type,
+                },
+                "fighter_bout_stats": parsed_fight["fighter_bout_stats"],
+            }
+            parsed.append(
+                ParsedIngestionRecord(
+                    source_system=record.source_system,
+                    source_record_id=record.source_record_id,
+                    parsed_payload=parsed_payload,
+                    payload_sha256=record.payload_sha256,
+                    idempotency_key=record.idempotency_key,
+                )
+            )
+
+        LOGGER.info("ufc_stats.bout_stats.parse.fight_pages", extra={"records_parsed": len(parsed)})
+        return tuple(parsed)
+
+
+class UFCStatsBoutStatsNormalizer(Normalizer):
+    """Normalize parsed fight stats into fighters/events/bouts/fighter_bout_stats rows."""
+
+    def normalize(self, records: Sequence[ParsedIngestionRecord]) -> Sequence[NormalizedRow]:
+        normalized_rows: list[NormalizedRow] = []
+        now_utc = _utc_now_iso()
+
+        for record in records:
+            parsed = record.parsed_payload
+            event_id = _as_optional_str(parsed.get("event_id"))
+            bout = parsed.get("bout")
+            if not event_id or not isinstance(bout, Mapping):
+                continue
+
+            bout_id = _as_optional_str(bout.get("bout_id"))
+            red_id = _as_optional_str(bout.get("fighter_red_id"))
+            blue_id = _as_optional_str(bout.get("fighter_blue_id"))
+            if not bout_id or not red_id or not blue_id or red_id == blue_id:
+                continue
+
+            fighters = parsed.get("fighters")
+            if isinstance(fighters, Sequence):
+                for fighter_obj in fighters:
+                    if not isinstance(fighter_obj, Mapping):
+                        continue
+                    fighter_id = _as_optional_str(fighter_obj.get("fighter_id"))
+                    full_name = _as_optional_str(fighter_obj.get("full_name"))
+                    if not fighter_id or not full_name:
+                        continue
+                    fighter_source_record_id = f"fighter:{fighter_id}"
+                    fighter_payload = {
+                        "fighter_id": fighter_id,
+                        "full_name": full_name,
+                        "date_of_birth_utc": None,
+                        "nationality": None,
+                        "stance": None,
+                        "height_cm": None,
+                        "reach_cm": None,
+                    }
+                    fighter_payload_sha = _stable_sha256(json.dumps(fighter_payload, sort_keys=True))
+                    normalized_rows.append(
+                        NormalizedRow(
+                            table_name="fighters",
+                            primary_key=fighter_id,
+                            data={
+                                **fighter_payload,
+                                "source_system": record.source_system,
+                                "source_record_id": fighter_source_record_id,
+                                "source_updated_at_utc": None,
+                                "source_payload_sha256": fighter_payload_sha,
+                                "ingested_at_utc": now_utc,
+                                "created_at_utc": now_utc,
+                                "updated_at_utc": now_utc,
+                            },
+                            source_system=record.source_system,
+                            source_record_id=fighter_source_record_id,
+                            payload_sha256=fighter_payload_sha,
+                            idempotency_key=_stable_sha256(
+                                f"{record.source_system}|fighters|{fighter_source_record_id}|{fighter_payload_sha}"
+                            ),
+                        )
+                    )
+
+            event_payload = {
+                "event_id": event_id,
+                "event_name": _coalesce(_as_optional_str(parsed.get("event_name")), event_id),
+                "event_date_utc": _coalesce(
+                    _as_optional_str(parsed.get("event_date_utc")),
+                    "1970-01-01T00:00:00Z",
+                ),
+                "venue": _as_optional_str(parsed.get("venue")),
+                "city": _as_optional_str(parsed.get("city")),
+                "region": _as_optional_str(parsed.get("region")),
+                "country": _as_optional_str(parsed.get("country")),
+            }
+            event_payload_sha = _stable_sha256(json.dumps(event_payload, sort_keys=True))
+            normalized_rows.append(
+                NormalizedRow(
+                    table_name="events",
+                    primary_key=event_id,
+                    data={
+                        "event_id": event_payload["event_id"],
+                        "promotion": "UFC",
+                        "event_name": event_payload["event_name"],
+                        "event_date_utc": event_payload["event_date_utc"],
+                        "venue": event_payload["venue"],
+                        "city": event_payload["city"],
+                        "region": event_payload["region"],
+                        "country": event_payload["country"],
+                        "timezone_name": "UTC",
+                        "source_system": record.source_system,
+                        "source_record_id": f"event:{event_id}",
+                        "source_updated_at_utc": None,
+                        "source_payload_sha256": event_payload_sha,
+                        "ingested_at_utc": now_utc,
+                        "created_at_utc": now_utc,
+                        "updated_at_utc": now_utc,
+                    },
+                    source_system=record.source_system,
+                    source_record_id=f"event:{event_id}",
+                    payload_sha256=event_payload_sha,
+                    idempotency_key=_stable_sha256(
+                        f"{record.source_system}|events|event:{event_id}|{event_payload_sha}"
+                    ),
+                )
+            )
+
+            bout_payload = {
+                "bout_id": bout_id,
+                "event_id": event_id,
+                "bout_order": _as_optional_int(bout.get("bout_order")),
+                "fighter_red_id": red_id,
+                "fighter_blue_id": blue_id,
+                "weight_class": _as_optional_str(bout.get("weight_class")),
+                "result_method": _as_optional_str(bout.get("result_method")),
+                "result_round": _as_optional_int(bout.get("result_round")),
+                "result_time_seconds": _duration_to_seconds(_as_optional_str(bout.get("result_time"))),
+                "winner_fighter_id": _as_optional_str(bout.get("winner_fighter_id")),
+            }
+            bout_payload_sha = _stable_sha256(json.dumps(bout_payload, sort_keys=True))
+            bout_source_record_id = f"bout:{bout_id}"
+            normalized_rows.append(
+                NormalizedRow(
+                    table_name="bouts",
+                    primary_key=bout_id,
+                    data={
+                        "bout_id": bout_id,
+                        "event_id": event_id,
+                        "bout_order": bout_payload["bout_order"],
+                        "fighter_red_id": red_id,
+                        "fighter_blue_id": blue_id,
+                        "weight_class": bout_payload["weight_class"],
+                        "gender": None,
+                        "is_title_fight": 0,
+                        "scheduled_rounds": _as_optional_int(bout.get("scheduled_rounds")),
+                        "bout_start_time_utc": None,
+                        "result_method": bout_payload["result_method"],
+                        "result_round": bout_payload["result_round"],
+                        "result_time_seconds": bout_payload["result_time_seconds"],
+                        "winner_fighter_id": bout_payload["winner_fighter_id"],
+                        "source_system": record.source_system,
+                        "source_record_id": bout_source_record_id,
+                        "source_updated_at_utc": None,
+                        "source_payload_sha256": bout_payload_sha,
+                        "ingested_at_utc": now_utc,
+                        "created_at_utc": now_utc,
+                        "updated_at_utc": now_utc,
+                    },
+                    source_system=record.source_system,
+                    source_record_id=bout_source_record_id,
+                    payload_sha256=bout_payload_sha,
+                    idempotency_key=_stable_sha256(
+                        f"{record.source_system}|bouts|{bout_source_record_id}|{bout_payload_sha}"
+                    ),
+                )
+            )
+
+            fighter_bout_stats = parsed.get("fighter_bout_stats")
+            if not isinstance(fighter_bout_stats, Sequence):
+                continue
+            for stats_obj in fighter_bout_stats:
+                if not isinstance(stats_obj, Mapping):
+                    continue
+                fighter_id = _as_optional_str(stats_obj.get("fighter_id"))
+                opponent_id = _as_optional_str(stats_obj.get("opponent_fighter_id"))
+                corner = _as_optional_str(stats_obj.get("corner"))
+                if not fighter_id or not opponent_id or fighter_id == opponent_id:
+                    continue
+
+                stats_payload = {
+                    "fighter_bout_stats_id": f"{bout_id}:{fighter_id}",
+                    "bout_id": bout_id,
+                    "fighter_id": fighter_id,
+                    "opponent_fighter_id": opponent_id,
+                    "corner": corner,
+                    "knockdowns": _as_optional_int(stats_obj.get("knockdowns")),
+                    "sig_strikes_landed": _as_optional_int(stats_obj.get("sig_strikes_landed")),
+                    "sig_strikes_attempted": _as_optional_int(stats_obj.get("sig_strikes_attempted")),
+                    "total_strikes_landed": _as_optional_int(stats_obj.get("total_strikes_landed")),
+                    "total_strikes_attempted": _as_optional_int(stats_obj.get("total_strikes_attempted")),
+                    "takedowns_landed": _as_optional_int(stats_obj.get("takedowns_landed")),
+                    "takedowns_attempted": _as_optional_int(stats_obj.get("takedowns_attempted")),
+                    "submission_attempts": _as_optional_int(stats_obj.get("submission_attempts")),
+                    "reversals": _as_optional_int(stats_obj.get("reversals")),
+                    "control_time_seconds": _as_optional_int(stats_obj.get("control_time_seconds")),
+                }
+                stats_payload_sha = _stable_sha256(json.dumps(stats_payload, sort_keys=True))
+                source_record_id = f"fighter_bout_stats:{bout_id}:{fighter_id}"
+                normalized_rows.append(
+                    NormalizedRow(
+                        table_name="fighter_bout_stats",
+                        primary_key=stats_payload["fighter_bout_stats_id"],
+                        data={
+                            **stats_payload,
+                            "source_system": record.source_system,
+                            "source_record_id": source_record_id,
+                            "source_updated_at_utc": None,
+                            "source_payload_sha256": stats_payload_sha,
+                            "ingested_at_utc": now_utc,
+                            "created_at_utc": now_utc,
+                            "updated_at_utc": now_utc,
+                        },
+                        source_system=record.source_system,
+                        source_record_id=source_record_id,
+                        payload_sha256=stats_payload_sha,
+                        idempotency_key=_stable_sha256(
+                            f"{record.source_system}|fighter_bout_stats|{source_record_id}|{stats_payload_sha}"
+                        ),
+                    )
+                )
+
+        table_order = {"fighters": 0, "events": 1, "bouts": 2, "fighter_bout_stats": 3}
+        normalized_rows.sort(key=lambda row: (table_order.get(row.table_name, 99), row.primary_key))
+        LOGGER.info(
+            "ufc_stats.bout_stats.normalize.rows",
+            extra={"normalized_rows": len(normalized_rows)},
+        )
+        return tuple(normalized_rows)
+
+
+class UFCStatsNormalizer(Normalizer):
+    """Normalize parsed UFC Stats payloads into fighters/events/bouts rows."""
+
+    def normalize(self, records: Sequence[ParsedIngestionRecord]) -> Sequence[NormalizedRow]:
+        normalized_rows: list[NormalizedRow] = []
+        now_utc = _utc_now_iso()
+
+        for record in records:
+            parsed = record.parsed_payload
+            event_id = _as_optional_str(parsed.get("event_id"))
+            if not event_id:
+                continue
+
+            fighters = parsed.get("fighters", [])
+            if isinstance(fighters, Sequence):
+                for fighter_obj in fighters:
+                    if not isinstance(fighter_obj, Mapping):
+                        continue
+                    fighter_id = _as_optional_str(fighter_obj.get("fighter_id"))
+                    full_name = _as_optional_str(fighter_obj.get("full_name"))
+                    if not fighter_id or not full_name:
+                        continue
+                    fighter_source_record_id = f"fighter:{fighter_id}"
+                    fighter_payload = {
+                        "fighter_id": fighter_id,
+                        "full_name": full_name,
+                        "date_of_birth_utc": None,
+                        "nationality": None,
+                        "stance": None,
+                        "height_cm": None,
+                        "reach_cm": None,
+                    }
+                    fighter_payload_sha = _stable_sha256(json.dumps(fighter_payload, sort_keys=True))
+
+                    normalized_rows.append(
+                        NormalizedRow(
+                            table_name="fighters",
+                            primary_key=fighter_id,
+                            data={
+                                **fighter_payload,
+                                "source_system": record.source_system,
+                                "source_record_id": fighter_source_record_id,
+                                "source_updated_at_utc": None,
+                                "source_payload_sha256": fighter_payload_sha,
+                                "ingested_at_utc": now_utc,
+                                "created_at_utc": now_utc,
+                                "updated_at_utc": now_utc,
+                            },
+                            source_system=record.source_system,
+                            source_record_id=fighter_source_record_id,
+                            payload_sha256=fighter_payload_sha,
+                            idempotency_key=_stable_sha256(
+                                f"{record.source_system}|fighters|{fighter_source_record_id}|{fighter_payload_sha}"
+                            ),
+                        )
+                    )
+
+            event_payload = {
+                "event_id": event_id,
+                "event_name": _coalesce(_as_optional_str(parsed.get("event_name")), event_id),
+                "event_date_utc": _coalesce(
+                    _as_optional_str(parsed.get("event_date_utc")),
+                    "1970-01-01T00:00:00Z",
+                ),
+                "venue": _as_optional_str(parsed.get("venue")),
+                "city": _as_optional_str(parsed.get("city")),
+                "region": _as_optional_str(parsed.get("region")),
+                "country": _as_optional_str(parsed.get("country")),
+            }
+            event_payload_sha = _stable_sha256(json.dumps(event_payload, sort_keys=True))
+            normalized_rows.append(
+                NormalizedRow(
+                    table_name="events",
+                    primary_key=event_id,
+                    data={
+                        "event_id": event_payload["event_id"],
+                        "promotion": "UFC",
+                        "event_name": event_payload["event_name"],
+                        "event_date_utc": event_payload["event_date_utc"],
+                        "venue": event_payload["venue"],
+                        "city": event_payload["city"],
+                        "region": event_payload["region"],
+                        "country": event_payload["country"],
+                        "timezone_name": "UTC",
+                        "source_system": record.source_system,
+                        "source_record_id": f"event:{event_id}",
+                        "source_updated_at_utc": None,
+                        "source_payload_sha256": event_payload_sha,
+                        "ingested_at_utc": now_utc,
+                        "created_at_utc": now_utc,
+                        "updated_at_utc": now_utc,
+                    },
+                    source_system=record.source_system,
+                    source_record_id=f"event:{event_id}",
+                    payload_sha256=event_payload_sha,
+                    idempotency_key=_stable_sha256(
+                        f"{record.source_system}|events|event:{event_id}|{event_payload_sha}"
+                    ),
+                )
+            )
+
+            bouts = parsed.get("bouts", [])
+            if isinstance(bouts, Sequence):
+                for bout in bouts:
+                    if not isinstance(bout, Mapping):
+                        continue
+                    bout_id = _as_optional_str(bout.get("bout_id"))
+                    red_id = _as_optional_str(bout.get("fighter_red_id"))
+                    blue_id = _as_optional_str(bout.get("fighter_blue_id"))
+                    if not bout_id or not red_id or not blue_id or red_id == blue_id:
+                        continue
+
+                    bout_payload = {
+                        "bout_id": bout_id,
+                        "event_id": event_id,
+                        "bout_order": _as_optional_int(bout.get("bout_order")),
+                        "fighter_red_id": red_id,
+                        "fighter_blue_id": blue_id,
+                        "weight_class": _as_optional_str(bout.get("weight_class")),
+                        "result_method": _as_optional_str(bout.get("result_method")),
+                        "result_round": _as_optional_int(bout.get("result_round")),
+                        "result_time_seconds": _duration_to_seconds(_as_optional_str(bout.get("result_time"))),
+                        "winner_fighter_id": _as_optional_str(bout.get("winner_fighter_id")),
+                    }
+                    bout_payload_sha = _stable_sha256(json.dumps(bout_payload, sort_keys=True))
+                    source_record_id = f"bout:{bout_id}"
+
+                    normalized_rows.append(
+                        NormalizedRow(
+                            table_name="bouts",
+                            primary_key=bout_id,
+                            data={
+                                "bout_id": bout_id,
+                                "event_id": event_id,
+                                "bout_order": bout_payload["bout_order"],
+                                "fighter_red_id": red_id,
+                                "fighter_blue_id": blue_id,
+                                "weight_class": bout_payload["weight_class"],
+                                "gender": None,
+                                "is_title_fight": 0,
+                                "scheduled_rounds": _as_optional_int(bout.get("scheduled_rounds")),
+                                "bout_start_time_utc": None,
+                                "result_method": bout_payload["result_method"],
+                                "result_round": bout_payload["result_round"],
+                                "result_time_seconds": bout_payload["result_time_seconds"],
+                                "winner_fighter_id": bout_payload["winner_fighter_id"],
+                                "source_system": record.source_system,
+                                "source_record_id": source_record_id,
+                                "source_updated_at_utc": None,
+                                "source_payload_sha256": bout_payload_sha,
+                                "ingested_at_utc": now_utc,
+                                "created_at_utc": now_utc,
+                                "updated_at_utc": now_utc,
+                            },
+                            source_system=record.source_system,
+                            source_record_id=source_record_id,
+                            payload_sha256=bout_payload_sha,
+                            idempotency_key=_stable_sha256(
+                                f"{record.source_system}|bouts|{source_record_id}|{bout_payload_sha}"
+                            ),
+                        )
+                    )
+
+        table_order = {"fighters": 0, "events": 1, "bouts": 2}
+        normalized_rows.sort(key=lambda row: (table_order.get(row.table_name, 99), row.primary_key))
+
+        LOGGER.info(
+            "ufc_stats.normalize.records",
+            extra={"normalized_rows": len(normalized_rows)},
+        )
+        return tuple(normalized_rows)
+
+
+class UFCStatsPersister(Persister):
+    """Persist normalized UFC Stats rows into the local SQLite schema."""
+
+    def __init__(self, *, db_path: Path) -> None:
+        self._db_path = db_path
+
+    def persist(self, rows: Sequence[NormalizedRow]) -> PersistResult:
+        """Persist normalized rows with idempotent upsert behavior."""
+
+        initialize_sqlite_database(self._db_path)
+        inserted_count = 0
+        updated_count = 0
+        skipped_count = 0
+
+        with sqlite3.connect(self._db_path) as connection:
+            connection.execute("PRAGMA foreign_keys = ON;")
+            for row in rows:
+                existing_sha = self._get_existing_payload_sha(connection, row)
+                if existing_sha is None:
+                    self._insert_row(connection, row)
+                    inserted_count += 1
+                    continue
+
+                if existing_sha == row.payload_sha256:
+                    skipped_count += 1
+                    continue
+
+                self._update_row_by_source_key(connection, row)
+                updated_count += 1
+
+            connection.commit()
+
+        LOGGER.info(
+            "ufc_stats.persist.rows",
+            extra={
+                "inserted_count": inserted_count,
+                "updated_count": updated_count,
+                "skipped_count": skipped_count,
+            },
+        )
+        return PersistResult(
+            inserted_count=inserted_count,
+            updated_count=updated_count,
+            skipped_count=skipped_count,
+        )
+
+    def _get_existing_payload_sha(self, connection: sqlite3.Connection, row: NormalizedRow) -> str | None:
+        result = connection.execute(
+            f"SELECT source_payload_sha256 FROM {row.table_name} "
+            "WHERE source_system = ? AND source_record_id = ?",
+            (row.source_system, row.source_record_id),
+        ).fetchone()
+        if result is None:
+            return None
+        return str(result[0]) if result[0] is not None else None
+
+    def _insert_row(self, connection: sqlite3.Connection, row: NormalizedRow) -> None:
+        columns = list(row.data.keys())
+        placeholders = ", ".join("?" for _ in columns)
+        column_sql = ", ".join(columns)
+        values = [row.data[column] for column in columns]
+        connection.execute(
+            f"INSERT INTO {row.table_name} ({column_sql}) VALUES ({placeholders})",
+            values,
+        )
+
+    def _update_row_by_source_key(self, connection: sqlite3.Connection, row: NormalizedRow) -> None:
+        update_columns = [
+            column
+            for column in row.data.keys()
+            if column not in {"created_at_utc", "source_system", "source_record_id"}
+        ]
+        set_sql = ", ".join(f"{column} = ?" for column in update_columns)
+        values = [row.data[column] for column in update_columns]
+        values.extend([row.source_system, row.source_record_id])
+
+        connection.execute(
+            f"UPDATE {row.table_name} SET {set_sql} WHERE source_system = ? AND source_record_id = ?",
+            values,
+        )
+
+
+class UFCStatsFighterMetadataIngestionService:
+    """Coordinate UFC Stats fighter metadata fetch, parse, normalize, persistence."""
+
+    def __init__(
+        self,
+        *,
+        fetcher: UFCStatsFighterMetadataFetcher,
+        parser: UFCStatsFighterMetadataParser,
+        normalizer: UFCStatsFighterMetadataNormalizer,
+        persister: UFCStatsPersister,
+    ) -> None:
+        self._fetcher = fetcher
+        self._parser = parser
+        self._normalizer = normalizer
+        self._persister = persister
+
+    def run(self, *, as_of_utc: datetime | None = None) -> PersistResult:
+        raw_records = self._fetcher.fetch(as_of_utc=as_of_utc)
+        parsed = self._parser.parse(raw_records)
+        normalized = self._normalizer.normalize(parsed)
+        return self._persister.persist(normalized)
+
+
+class UFCStatsIngestionService:
+    """Coordinate UFC Stats event fetch, parse, normalize, persistence."""
+
+    def __init__(
+        self,
+        *,
+        fetcher: UFCStatsFetcher,
+        parser: UFCStatsParser,
+        normalizer: UFCStatsNormalizer,
+        persister: UFCStatsPersister,
+    ) -> None:
+        self._fetcher = fetcher
+        self._parser = parser
+        self._normalizer = normalizer
+        self._persister = persister
+
+    def run(self, *, as_of_utc: datetime | None = None) -> PersistResult:
+        raw_records = self._fetcher.fetch(as_of_utc=as_of_utc)
+        parsed = self._parser.parse(raw_records)
+        normalized = self._normalizer.normalize(parsed)
+        return self._persister.persist(normalized)
+
+
+class UFCStatsBoutStatsIngestionService:
+    """Coordinate UFC Stats bout-level fighter stats ingestion."""
+
+    def __init__(
+        self,
+        *,
+        fetcher: UFCStatsBoutStatsFetcher,
+        parser: UFCStatsBoutStatsParser,
+        normalizer: UFCStatsBoutStatsNormalizer,
+        persister: UFCStatsPersister,
+    ) -> None:
+        self._fetcher = fetcher
+        self._parser = parser
+        self._normalizer = normalizer
+        self._persister = persister
+
+    def run(self, *, as_of_utc: datetime | None = None) -> PersistResult:
+        raw_records = self._fetcher.fetch(as_of_utc=as_of_utc)
+        parsed = self._parser.parse(raw_records)
+        normalized = self._normalizer.normalize(parsed)
+        return self._persister.persist(normalized)
+
+
+def run_ufc_stats_events_ingestion(
+    *,
+    db_path: Path,
+    raw_root: Path,
+    as_of_utc: datetime | None = None,
+    event_limit: int | None = None,
+) -> PersistResult:
+    """Entry point for UFC Stats completed events + bout result ingestion."""
+
+    service = UFCStatsIngestionService(
+        fetcher=UFCStatsFetcher(raw_root=raw_root, event_limit=event_limit),
+        parser=UFCStatsParser(),
+        normalizer=UFCStatsNormalizer(),
+        persister=UFCStatsPersister(db_path=db_path),
+    )
+    return service.run(as_of_utc=as_of_utc)
+
+
+def run_ufc_stats_events_ingestion_from_archives(
+    *,
+    db_path: Path,
+    raw_root: Path,
+    event_limit: int | None = None,
+) -> PersistResult:
+    """Replay archived event-details pages into events/bouts/fighters tables."""
+
+    parser = UFCStatsParser()
+    normalizer = UFCStatsNormalizer()
+    persister = UFCStatsPersister(db_path=db_path)
+    fetched_at = datetime.now(timezone.utc)
+
+    event_pages = _discover_latest_archived_html_by_id(
+        raw_root=raw_root,
+        id_pattern=re.compile(r"_event_details_(?P<id>[a-z0-9]+)_", re.IGNORECASE),
+    )
+    event_ids = sorted(event_pages)
+    if event_limit is not None:
+        event_ids = event_ids[:event_limit]
+
+    raw_records: list[RawIngestionRecord] = []
+    for event_id in event_ids:
+        archive_path = event_pages[event_id]
+        html = archive_path.read_text(encoding="utf-8", errors="replace")
+        payload_sha = _stable_sha256(html)
+        raw_records.append(
+            RawIngestionRecord(
+                source_system=UFC_STATS_SOURCE,
+                source_record_id=f"event_page:{event_id}",
+                fetched_at_utc=fetched_at,
+                payload={
+                    "event_url": f"http://ufcstats.com/event-details/{event_id}",
+                    "event_id": event_id,
+                    "event_name_from_index": None,
+                    "event_date_from_index": None,
+                    "archive_path": archive_path.as_posix(),
+                    "html": html,
+                },
+                payload_sha256=payload_sha,
+                idempotency_key=_stable_sha256(f"{UFC_STATS_SOURCE}|event_page|{event_id}|{payload_sha}"),
+            )
+        )
+
+    parsed = parser.parse(raw_records)
+    normalized = normalizer.normalize(parsed)
+    LOGGER.info(
+        "ufc_stats.events.archive_replay",
+        extra={"event_pages": len(raw_records), "normalized_rows": len(normalized)},
+    )
+    return persister.persist(normalized)
+
+
+def run_ufc_stats_bout_stats_ingestion(
+    *,
+    db_path: Path,
+    raw_root: Path,
+    as_of_utc: datetime | None = None,
+    event_limit: int | None = None,
+) -> PersistResult:
+    """Entry point for UFC Stats per-bout fighter statistics ingestion."""
+
+    service = UFCStatsBoutStatsIngestionService(
+        fetcher=UFCStatsBoutStatsFetcher(raw_root=raw_root, event_limit=event_limit),
+        parser=UFCStatsBoutStatsParser(),
+        normalizer=UFCStatsBoutStatsNormalizer(),
+        persister=UFCStatsPersister(db_path=db_path),
+    )
+    return service.run(as_of_utc=as_of_utc)
+
+
+def run_ufc_stats_bout_stats_ingestion_from_archives(
+    *,
+    db_path: Path,
+    raw_root: Path,
+    event_limit: int | None = None,
+) -> PersistResult:
+    """Replay archived event-details + fight-details pages into bout stats tables."""
+
+    parser = UFCStatsBoutStatsParser()
+    normalizer = UFCStatsBoutStatsNormalizer()
+    persister = UFCStatsPersister(db_path=db_path)
+    fetched_at = datetime.now(timezone.utc)
+
+    event_pages = _discover_latest_archived_html_by_id(
+        raw_root=raw_root,
+        id_pattern=re.compile(r"_event_details_(?P<id>[a-z0-9]+)_", re.IGNORECASE),
+    )
+    fight_pages = _discover_latest_archived_html_by_id(
+        raw_root=raw_root,
+        id_pattern=re.compile(r"_fight_details_(?P<id>[a-z0-9]+)_", re.IGNORECASE),
+    )
+    event_ids = sorted(event_pages)
+    if event_limit is not None:
+        event_ids = event_ids[:event_limit]
+
+    raw_records: list[RawIngestionRecord] = []
+    fight_pages_used = 0
+    event_fallback_rows = 0
+    for event_id in event_ids:
+        event_archive_path = event_pages[event_id]
+        event_html = event_archive_path.read_text(encoding="utf-8", errors="replace")
+        parsed_event = parse_event_page(
+            event_id=event_id,
+            event_url=f"http://ufcstats.com/event-details/{event_id}",
+            event_html=event_html,
+            fallback_event_name=None,
+            fallback_event_date=None,
+        )
+        bouts = parsed_event.get("bouts")
+        if not isinstance(bouts, Sequence):
+            continue
+
+        for bout_obj in bouts:
+            if not isinstance(bout_obj, Mapping):
+                continue
+            bout_id = _as_optional_str(bout_obj.get("bout_id"))
+            red_id = _as_optional_str(bout_obj.get("fighter_red_id"))
+            blue_id = _as_optional_str(bout_obj.get("fighter_blue_id"))
+            if not bout_id or not red_id or not blue_id:
+                continue
+            fight_archive_path = fight_pages.get(bout_id)
+            source_page_type = "event_details_fallback"
+            if fight_archive_path is not None:
+                fight_html = fight_archive_path.read_text(encoding="utf-8", errors="replace")
+                payload_sha = _stable_sha256(fight_html)
+                archive_path = fight_archive_path.as_posix()
+                source_page_type = "fight_details"
+                fight_pages_used += 1
+            else:
+                fight_html = None
+                payload_sha = _stable_sha256(
+                    json.dumps(
+                        {
+                            "event_id": parsed_event.get("event_id"),
+                            "bout_id": bout_id,
+                            "event_row_fighter_bout_stats": bout_obj.get("event_row_fighter_bout_stats"),
+                        },
+                        sort_keys=True,
+                    )
+                )
+                archive_path = None
+                event_fallback_rows += 1
+            raw_records.append(
+                RawIngestionRecord(
+                    source_system=UFC_STATS_SOURCE,
+                    source_record_id=f"fight_page:{bout_id}",
+                    fetched_at_utc=fetched_at,
+                    payload={
+                        "event_id": parsed_event.get("event_id"),
+                        "event_url": parsed_event.get("event_url"),
+                        "event_name": parsed_event.get("event_name"),
+                        "event_date_utc": parsed_event.get("event_date_utc"),
+                        "venue": parsed_event.get("venue"),
+                        "city": parsed_event.get("city"),
+                        "region": parsed_event.get("region"),
+                        "country": parsed_event.get("country"),
+                        "event_archive_path": event_archive_path.as_posix(),
+                        "bout_id": bout_id,
+                        "fight_url": bout_obj.get("fight_url"),
+                        "bout_order": bout_obj.get("bout_order"),
+                        "fighter_red_id": red_id,
+                        "fighter_red_name": bout_obj.get("fighter_red_name"),
+                        "fighter_blue_id": blue_id,
+                        "fighter_blue_name": bout_obj.get("fighter_blue_name"),
+                        "winner_fighter_id": bout_obj.get("winner_fighter_id"),
+                        "result_method": bout_obj.get("result_method"),
+                        "result_round": bout_obj.get("result_round"),
+                        "result_time": bout_obj.get("result_time"),
+                        "scheduled_rounds": bout_obj.get("scheduled_rounds"),
+                        "weight_class": bout_obj.get("weight_class"),
+                        "event_row_fighter_bout_stats": bout_obj.get("event_row_fighter_bout_stats"),
+                        "source_page_type": source_page_type,
+                        "archive_path": archive_path,
+                        "html": fight_html,
+                    },
+                    payload_sha256=payload_sha,
+                    idempotency_key=_stable_sha256(f"{UFC_STATS_SOURCE}|fight_page|{bout_id}|{payload_sha}"),
+                )
+            )
+
+    parsed = parser.parse(raw_records)
+    normalized = normalizer.normalize(parsed)
+    LOGGER.info(
+        "ufc_stats.bout_stats.archive_replay",
+        extra={
+            "fight_pages_or_fallback_records": len(raw_records),
+            "fight_pages_used": fight_pages_used,
+            "event_fallback_records": event_fallback_rows,
+            "normalized_rows": len(normalized),
+        },
+    )
+    return persister.persist(normalized)
+
+
+def run_ufc_stats_fighter_metadata_ingestion(
+    *,
+    db_path: Path,
+    raw_root: Path,
+    as_of_utc: datetime | None = None,
+    fighter_limit: int | None = None,
+) -> PersistResult:
+    """Entry point for UFC Stats fighter profile metadata ingestion."""
+
+    service = UFCStatsFighterMetadataIngestionService(
+        fetcher=UFCStatsFighterMetadataFetcher(raw_root=raw_root, fighter_limit=fighter_limit),
+        parser=UFCStatsFighterMetadataParser(),
+        normalizer=UFCStatsFighterMetadataNormalizer(),
+        persister=UFCStatsPersister(db_path=db_path),
+    )
+    return service.run(as_of_utc=as_of_utc)
+
+
+def run_ufc_stats_fighter_metadata_ingestion_from_archives(
+    *,
+    db_path: Path,
+    raw_root: Path,
+    fighter_limit: int | None = None,
+) -> PersistResult:
+    """Replay archived fighter-details pages into fighter metadata table."""
+
+    parser = UFCStatsFighterMetadataParser()
+    normalizer = UFCStatsFighterMetadataNormalizer()
+    persister = UFCStatsPersister(db_path=db_path)
+    fetched_at = datetime.now(timezone.utc)
+
+    fighter_pages = _discover_latest_archived_html_by_id(
+        raw_root=raw_root,
+        id_pattern=re.compile(r"_fighter_details_(?P<id>[a-z0-9]+)_", re.IGNORECASE),
+    )
+    fighter_ids = sorted(fighter_pages)
+    if fighter_limit is not None:
+        fighter_ids = fighter_ids[:fighter_limit]
+
+    raw_records: list[RawIngestionRecord] = []
+    for fighter_id in fighter_ids:
+        archive_path = fighter_pages[fighter_id]
+        html = archive_path.read_text(encoding="utf-8", errors="replace")
+        payload_sha = _stable_sha256(html)
+        raw_records.append(
+            RawIngestionRecord(
+                source_system=UFC_STATS_SOURCE,
+                source_record_id=f"fighter_profile:{fighter_id}",
+                fetched_at_utc=fetched_at,
+                payload={
+                    "fighter_id": fighter_id,
+                    "fighter_url": f"http://ufcstats.com/fighter-details/{fighter_id}",
+                    "full_name_from_index": None,
+                    "archive_path": archive_path.as_posix(),
+                    "html": html,
+                },
+                payload_sha256=payload_sha,
+                idempotency_key=_stable_sha256(f"{UFC_STATS_SOURCE}|fighter_profile|{fighter_id}|{payload_sha}"),
+            )
+        )
+
+    parsed = parser.parse(raw_records)
+    normalized = normalizer.normalize(parsed)
+    LOGGER.info(
+        "ufc_stats.fighter_metadata.archive_replay",
+        extra={"fighter_pages": len(raw_records), "normalized_rows": len(normalized)},
+    )
+    return persister.persist(normalized)
+
+
+def archive_raw_response(
+    *,
+    raw_root: Path,
+    fetched_at_utc: datetime,
+    source_system: str,
+    url: str,
+    payload_text: str,
+) -> ArchivedResponse:
+    """Archive raw response payload to ``data/raw`` with deterministic naming."""
+
+    payload_bytes = payload_text.encode("utf-8", errors="replace")
+    payload_sha = hashlib.sha256(payload_bytes).hexdigest()
+    endpoint_token = _endpoint_token(url)
+
+    partition_dir = raw_root / source_system / fetched_at_utc.strftime("%Y/%m/%d")
+    partition_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{fetched_at_utc.strftime('%H%M%S')}_{endpoint_token}_{payload_sha[:12]}.html"
+    archive_path = partition_dir / filename
+    archive_path.write_bytes(payload_bytes)
+
+    return ArchivedResponse(archive_path=archive_path, payload_sha256=payload_sha)
+
+
+def parse_completed_events_index(html: str) -> list[CompletedEventReference]:
+    """Extract completed UFC event references from index page HTML."""
+
+    refs: list[CompletedEventReference] = []
+    dates_by_id = {
+        match.group("id").lower(): _clean_text(match.group("date"))
+        for match in _EVENT_DATE_NEAR_LINK_RE.finditer(html)
+    }
+
+    seen_ids: set[str] = set()
+    for match in _EVENT_LINK_RE.finditer(html):
+        event_id = match.group("id").lower()
+        if event_id in seen_ids:
+            continue
+        seen_ids.add(event_id)
+        refs.append(
+            CompletedEventReference(
+                event_id=event_id,
+                event_url=match.group("url"),
+                event_name=_clean_text(match.group("name")),
+                event_date_text=dates_by_id.get(event_id),
+            )
+        )
+
+    return refs
+
+
+def parse_fighters_index_page(html: str) -> list[FighterIndexReference]:
+    """Extract fighter references from a UFC Stats fighter index page."""
+
+    refs_by_id: dict[str, FighterIndexReference] = {}
+    for row in _FIGHTER_TABLE_ROW_RE.finditer(html):
+        body = row.group("body")
+        links = [
+            (match.group("id").lower(), match.group("url"), _clean_text(match.group("name")))
+            for match in _FIGHTER_LINK_RE.finditer(body)
+        ]
+        if not links:
+            continue
+
+        fighter_id = links[0][0]
+        fighter_url = links[0][1]
+        name_parts: list[str] = []
+        for link_id, _, name in links:
+            if link_id != fighter_id:
+                continue
+            if name and name not in name_parts:
+                name_parts.append(name)
+            if len(name_parts) >= 2:
+                break
+
+        full_name = " ".join(name_parts).strip() if name_parts else None
+        refs_by_id[fighter_id] = FighterIndexReference(
+            fighter_id=fighter_id,
+            fighter_url=fighter_url,
+            full_name=full_name or None,
+        )
+
+    return [refs_by_id[key] for key in sorted(refs_by_id)]
+
+
+def parse_fighter_profile_page(
+    *,
+    fighter_id: str,
+    fighter_url: str,
+    fighter_html: str,
+    fallback_full_name: str | None,
+) -> Mapping[str, object]:
+    """Parse UFC Stats fighter profile HTML into deterministic fighter metadata."""
+
+    name_match = _FIGHTER_PROFILE_NAME_RE.search(fighter_html)
+    full_name = _clean_text(name_match.group("name")) if name_match else fallback_full_name
+
+    detail_items: dict[str, str] = {}
+    for match in _FIGHTER_PROFILE_ITEM_RE.finditer(fighter_html):
+        label = _clean_text(match.group("label")).lower()
+        value = _clean_text(match.group("value"))
+        detail_items[label] = value
+
+    return {
+        "fighter_id": fighter_id,
+        "fighter_url": fighter_url,
+        "full_name": _as_optional_str(full_name),
+        "date_of_birth_utc": _parse_date_to_utc_iso(detail_items.get("dob")),
+        "nationality": None,
+        "stance": _as_optional_str(detail_items.get("stance")),
+        "height_cm": _height_text_to_cm(detail_items.get("height")),
+        "reach_cm": _reach_text_to_cm(detail_items.get("reach")),
+    }
+
+
+def parse_event_page(
+    *,
+    event_id: str,
+    event_url: str,
+    event_html: str,
+    fallback_event_name: str | None,
+    fallback_event_date: str | None,
+) -> Mapping[str, object]:
+    """Parse event page HTML into deterministic event + bout structures."""
+
+    event_name_match = _EVENT_NAME_RE.search(event_html)
+    event_name = _clean_text(event_name_match.group("name")) if event_name_match else fallback_event_name
+
+    detail_items: dict[str, str] = {}
+    for match in _EVENT_DETAIL_ITEM_RE.finditer(event_html):
+        detail_items[_clean_text(match.group("label")).lower()] = _clean_text(match.group("value"))
+
+    event_date_text = detail_items.get("date") or _extract_event_detail_text(event_html, "date") or fallback_event_date
+    event_date_utc = _parse_date_to_utc_iso(event_date_text)
+
+    location = detail_items.get("location") or _extract_event_detail_text(event_html, "location")
+    city, region, country = _parse_location(location)
+
+    fighters_by_id: dict[str, str] = {}
+    bouts: list[dict[str, object]] = []
+
+    for bout_order, match in enumerate(_BOUT_ROW_RE.finditer(event_html), start=1):
+        body = match.group("body")
+        fight_id = match.group("id").lower()
+        fighter_entries = [
+            (entry.group("id").lower(), _clean_text(entry.group("name")))
+            for entry in _FIGHTER_LINK_RE.finditer(body)
+        ]
+        if len(fighter_entries) < 2:
+            continue
+
+        red_id, red_name = fighter_entries[0]
+        blue_id, blue_name = fighter_entries[1]
+        fighters_by_id[red_id] = red_name
+        fighters_by_id[blue_id] = blue_name
+
+        td_cells = [_extract_cell_values(td.group("value")) for td in _TD_RE.finditer(body)]
+        td_values = [values[0] if values else "" for values in td_cells]
+        winner = _winner_from_row_columns(td_values=td_values, red_id=red_id, blue_id=blue_id)
+
+        method = td_values[-3] if len(td_values) >= 3 else None
+        result_round = _safe_int(td_values[-2]) if len(td_values) >= 2 else None
+        result_time = td_values[-1] if len(td_values) >= 1 else None
+
+        bouts.append(
+            {
+                "bout_id": fight_id,
+                "fight_url": match.group("url"),
+                "bout_order": bout_order,
+                "fighter_red_id": red_id,
+                "fighter_red_name": red_name,
+                "fighter_blue_id": blue_id,
+                "fighter_blue_name": blue_name,
+                "winner_fighter_id": winner,
+                "result_method": _as_optional_str(method),
+                "result_round": result_round,
+                "result_time": _as_optional_str(result_time),
+                "scheduled_rounds": None,
+                "weight_class": None,
+                "event_row_fighter_bout_stats": _event_row_fighter_bout_stats(
+                    td_cells=td_cells,
+                    red_id=red_id,
+                    blue_id=blue_id,
+                ),
+            }
+        )
+
+    fighters = [
+        {"fighter_id": fighter_id, "full_name": full_name}
+        for fighter_id, full_name in sorted(fighters_by_id.items())
+    ]
+
+    return {
+        "event_id": event_id,
+        "event_url": event_url,
+        "event_name": event_name,
+        "event_date_utc": event_date_utc,
+        "venue": None,
+        "city": city,
+        "region": region,
+        "country": country,
+        "fighters": fighters,
+        "bouts": bouts,
+    }
+
+
+def _extract_event_detail_text(event_html: str, label: str) -> str | None:
+    pattern = re.compile(
+        rf"<li[^>]*>\s*(?:<i[^>]*>)?\s*{re.escape(label)}\s*:\s*(?:</i>)?\s*(?P<value>.*?)\s*</li>",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(event_html)
+    if match is None:
+        return None
+    return _as_optional_str(_clean_text(match.group("value")))
+
+
+def parse_fight_details_page(
+    *,
+    bout_id: str,
+    fight_url: str,
+    fight_html: str,
+    fighter_red_id: str,
+    fighter_blue_id: str,
+) -> Mapping[str, object]:
+    """Parse fight-details page HTML into per-fighter stat lines."""
+
+    totals_table = _find_totals_table(fight_html)
+    if totals_table is None:
+        return {
+            "bout_id": bout_id,
+            "fight_url": fight_url,
+            "fighter_bout_stats": (
+                _empty_fighter_bout_stats(fighter_id=fighter_red_id, opponent_id=fighter_blue_id, corner="red"),
+                _empty_fighter_bout_stats(fighter_id=fighter_blue_id, opponent_id=fighter_red_id, corner="blue"),
+            ),
+        }
+
+    headers, row_cells = totals_table
+    index_map = _totals_table_index_map(headers)
+    red_stats, blue_stats = _extract_fighter_stats_from_totals_row(row_cells=row_cells, index_map=index_map)
+
+    return {
+        "bout_id": bout_id,
+        "fight_url": fight_url,
+        "fighter_bout_stats": (
+            {
+                "fighter_id": fighter_red_id,
+                "opponent_fighter_id": fighter_blue_id,
+                "corner": "red",
+                **red_stats,
+            },
+            {
+                "fighter_id": fighter_blue_id,
+                "opponent_fighter_id": fighter_red_id,
+                "corner": "blue",
+                **blue_stats,
+            },
+        ),
+    }
+
+
+def _event_row_fighter_bout_stats(
+    *,
+    td_cells: Sequence[Sequence[str]],
+    red_id: str,
+    blue_id: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    red_kd, blue_kd = _cell_pair_to_ints(td_cells, 2)
+    red_sig_landed, blue_sig_landed = _cell_pair_to_ints(td_cells, 3)
+    red_td_landed, blue_td_landed = _cell_pair_to_ints(td_cells, 4)
+    red_sub, blue_sub = _cell_pair_to_ints(td_cells, 5)
+
+    red = _empty_fighter_bout_stats(fighter_id=red_id, opponent_id=blue_id, corner="red")
+    blue = _empty_fighter_bout_stats(fighter_id=blue_id, opponent_id=red_id, corner="blue")
+    red["knockdowns"] = red_kd
+    blue["knockdowns"] = blue_kd
+    red["sig_strikes_landed"] = red_sig_landed
+    blue["sig_strikes_landed"] = blue_sig_landed
+    red["takedowns_landed"] = red_td_landed
+    blue["takedowns_landed"] = blue_td_landed
+    red["submission_attempts"] = red_sub
+    blue["submission_attempts"] = blue_sub
+    return red, blue
+
+
+def _coerce_event_row_fighter_stats(
+    *,
+    value: object,
+    red_id: str,
+    blue_id: str,
+) -> tuple[dict[str, object], dict[str, object]] | None:
+    if not isinstance(value, Sequence) or len(value) < 2:
+        return None
+    rows: list[dict[str, object]] = []
+    for item in value[:2]:
+        if not isinstance(item, Mapping):
+            return None
+        fighter_id = _as_optional_str(item.get("fighter_id"))
+        opponent_id = _as_optional_str(item.get("opponent_fighter_id"))
+        corner = _as_optional_str(item.get("corner"))
+        if not fighter_id or not opponent_id or not corner:
+            return None
+        stats_row = _empty_fighter_bout_stats(fighter_id=fighter_id, opponent_id=opponent_id, corner=corner)
+        for key in _empty_stats_metrics():
+            stats_row[key] = _as_optional_int(item.get(key))
+        rows.append(stats_row)
+    if len(rows) != 2:
+        return None
+    ids = {rows[0]["fighter_id"], rows[1]["fighter_id"]}
+    expected = {red_id, blue_id}
+    if ids != expected:
+        return None
+    return rows[0], rows[1]
+
+
+def _winner_from_row_columns(*, td_values: Sequence[str], red_id: str, blue_id: str) -> str | None:
+    if not td_values:
+        return None
+
+    status = td_values[0].strip().lower()
+    if status.startswith("win") or status == "w":
+        return red_id
+    if status.startswith("loss") or status == "l":
+        return blue_id
+    return None
+
+
+def _event_is_not_after(event_date_text: str | None, as_of_utc: datetime) -> bool:
+    parsed = _parse_date_to_datetime(event_date_text)
+    if parsed is None:
+        return True
+    return parsed <= as_of_utc.astimezone(timezone.utc)
+
+
+def _parse_date_to_datetime(date_text: str | None) -> datetime | None:
+    if not date_text:
+        return None
+
+    cleaned = _clean_text(date_text)
+    for fmt in ("%B %d, %Y", "%b %d, %Y"):
+        try:
+            return datetime.strptime(cleaned, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_date_to_utc_iso(date_text: str | None) -> str | None:
+    parsed = _parse_date_to_datetime(date_text)
+    if parsed is None:
+        return None
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_location(location: str | None) -> tuple[str | None, str | None, str | None]:
+    if not location:
+        return (None, None, None)
+    parts = [part.strip() for part in location.split(",") if part.strip()]
+    if len(parts) == 1:
+        return (parts[0], None, None)
+    if len(parts) == 2:
+        return (parts[0], None, parts[1])
+    return (parts[0], parts[1], parts[2])
+
+
+def _duration_to_seconds(value: str | None) -> int | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+
+    parts = cleaned.split(":")
+    if len(parts) != 2:
+        return None
+
+    minutes = _safe_int(parts[0])
+    seconds = _safe_int(parts[1])
+    if minutes is None or seconds is None:
+        return None
+
+    return (minutes * 60) + seconds
+
+
+def _find_totals_table(html: str) -> tuple[list[str], list[list[str]]] | None:
+    for table_match in _FIGHT_DETAILS_TABLE_RE.finditer(html):
+        table_body = table_match.group("body")
+        headers = [_clean_text(match.group("value")) for match in _TH_RE.finditer(table_body)]
+        header_tokens = {_header_token(header) for header in headers}
+        if "kd" not in header_tokens or "ctrl" not in header_tokens:
+            continue
+
+        rows = [match.group("body") for match in _TR_RE.finditer(table_body)]
+        totals_row_cells: list[list[str]] | None = None
+        fallback_row_cells: list[list[str]] | None = None
+        for row_html in rows:
+            cells = [_extract_cell_values(td.group("value")) for td in _TD_RE.finditer(row_html)]
+            if not cells:
+                continue
+            if fallback_row_cells is None:
+                fallback_row_cells = cells
+            first_values = [value.lower() for value in cells[0]]
+            if any(value.startswith("tot") for value in first_values):
+                totals_row_cells = cells
+                break
+
+        chosen = totals_row_cells or fallback_row_cells
+        if chosen is not None:
+            return headers, chosen
+    return None
+
+
+def _extract_cell_values(cell_html: str) -> list[str]:
+    p_values = [_clean_text(match.group("value")) for match in _P_RE.finditer(cell_html)]
+    values = [value for value in p_values if value]
+    if values:
+        return values
+    cleaned = _clean_text(cell_html)
+    return [cleaned] if cleaned else []
+
+
+def _header_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9%]+", "", value.lower())
+
+
+def _totals_table_index_map(headers: Sequence[str]) -> dict[str, int]:
+    mapping: dict[str, int] = {}
+    for index, header in enumerate(headers):
+        token = _header_token(header)
+        if token == "kd":
+            mapping["knockdowns"] = index
+        elif token == "sigstr":
+            mapping["sig_strikes"] = index
+        elif token == "totalstr":
+            mapping["total_strikes"] = index
+        elif token == "td":
+            mapping["takedowns"] = index
+        elif token == "subatt":
+            mapping["submission_attempts"] = index
+        elif token == "rev":
+            mapping["reversals"] = index
+        elif token == "ctrl":
+            mapping["control_time_seconds"] = index
+    return mapping
+
+
+def _extract_fighter_stats_from_totals_row(
+    *,
+    row_cells: Sequence[Sequence[str]],
+    index_map: Mapping[str, int],
+) -> tuple[dict[str, int | None], dict[str, int | None]]:
+    red = _empty_stats_metrics()
+    blue = _empty_stats_metrics()
+
+    red["knockdowns"], blue["knockdowns"] = _cell_pair_to_ints(row_cells, index_map.get("knockdowns"))
+
+    red_sig, blue_sig = _cell_pair_to_landed_attempted(row_cells, index_map.get("sig_strikes"))
+    red["sig_strikes_landed"], red["sig_strikes_attempted"] = red_sig
+    blue["sig_strikes_landed"], blue["sig_strikes_attempted"] = blue_sig
+
+    red_total, blue_total = _cell_pair_to_landed_attempted(row_cells, index_map.get("total_strikes"))
+    red["total_strikes_landed"], red["total_strikes_attempted"] = red_total
+    blue["total_strikes_landed"], blue["total_strikes_attempted"] = blue_total
+
+    red_td, blue_td = _cell_pair_to_landed_attempted(row_cells, index_map.get("takedowns"))
+    red["takedowns_landed"], red["takedowns_attempted"] = red_td
+    blue["takedowns_landed"], blue["takedowns_attempted"] = blue_td
+
+    red["submission_attempts"], blue["submission_attempts"] = _cell_pair_to_ints(
+        row_cells, index_map.get("submission_attempts")
+    )
+    red["reversals"], blue["reversals"] = _cell_pair_to_ints(row_cells, index_map.get("reversals"))
+    red["control_time_seconds"], blue["control_time_seconds"] = _cell_pair_to_durations(
+        row_cells, index_map.get("control_time_seconds")
+    )
+
+    return red, blue
+
+
+def _empty_fighter_bout_stats(*, fighter_id: str, opponent_id: str, corner: str) -> dict[str, object]:
+    return {
+        "fighter_id": fighter_id,
+        "opponent_fighter_id": opponent_id,
+        "corner": corner,
+        **_empty_stats_metrics(),
+    }
+
+
+def _empty_stats_metrics() -> dict[str, int | None]:
+    return {
+        "knockdowns": None,
+        "sig_strikes_landed": None,
+        "sig_strikes_attempted": None,
+        "total_strikes_landed": None,
+        "total_strikes_attempted": None,
+        "takedowns_landed": None,
+        "takedowns_attempted": None,
+        "submission_attempts": None,
+        "reversals": None,
+        "control_time_seconds": None,
+    }
+
+
+def _cell_pair_to_ints(row_cells: Sequence[Sequence[str]], index: int | None) -> tuple[int | None, int | None]:
+    red_text, blue_text = _cell_pair_values(row_cells, index)
+    return _safe_int(_extract_first_number_text(red_text)), _safe_int(_extract_first_number_text(blue_text))
+
+
+def _cell_pair_to_durations(row_cells: Sequence[Sequence[str]], index: int | None) -> tuple[int | None, int | None]:
+    red_text, blue_text = _cell_pair_values(row_cells, index)
+    return _duration_to_seconds(red_text), _duration_to_seconds(blue_text)
+
+
+def _cell_pair_to_landed_attempted(
+    row_cells: Sequence[Sequence[str]], index: int | None
+) -> tuple[tuple[int | None, int | None], tuple[int | None, int | None]]:
+    red_text, blue_text = _cell_pair_values(row_cells, index)
+    return _parse_landed_attempted(red_text), _parse_landed_attempted(blue_text)
+
+
+def _cell_pair_values(row_cells: Sequence[Sequence[str]], index: int | None) -> tuple[str | None, str | None]:
+    if index is None or index < 0 or index >= len(row_cells):
+        return (None, None)
+    values = row_cells[index]
+    if not values:
+        return (None, None)
+    if len(values) == 1:
+        return (values[0], None)
+    return (values[0], values[1])
+
+
+def _parse_landed_attempted(value: str | None) -> tuple[int | None, int | None]:
+    if not value:
+        return (None, None)
+    cleaned = value.strip()
+    if not cleaned or cleaned == "--":
+        return (None, None)
+
+    match = re.search(r"(?P<landed>\d+)\s*of\s*(?P<attempted>\d+)", cleaned, re.IGNORECASE)
+    if match is None:
+        maybe = _safe_int(_extract_first_number_text(cleaned))
+        return (maybe, None)
+    return (_safe_int(match.group("landed")), _safe_int(match.group("attempted")))
+
+
+def _extract_first_number_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = re.search(r"\d+", value)
+    return match.group(0) if match is not None else None
+
+
+def _height_text_to_cm(value: str | None) -> float | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if not cleaned or cleaned == "--":
+        return None
+
+    match = re.search(r"(?P<feet>\d+)\s*'\s*(?P<inches>\d+)", cleaned)
+    if match is None:
+        return None
+
+    feet = _safe_int(match.group("feet"))
+    inches = _safe_int(match.group("inches"))
+    if feet is None or inches is None:
+        return None
+
+    return round(((feet * 12) + inches) * 2.54, 2)
+
+
+def _reach_text_to_cm(value: str | None) -> float | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    if not cleaned or cleaned == "--":
+        return None
+
+    match = re.search(r"(?P<inches>\d+(?:\.\d+)?)", cleaned)
+    if match is None:
+        return None
+
+    try:
+        inches = float(match.group("inches"))
+    except ValueError:
+        return None
+    return round(inches * 2.54, 2)
+
+
+def _safe_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return None
+
+
+def _as_optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
+def _as_optional_int(value: object) -> int | None:
+    return _safe_int(value)
+
+
+def _as_optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_text(value: str) -> str:
+    without_tags = _TAG_RE.sub(" ", value)
+    return _SPACE_RE.sub(" ", without_tags).strip()
+
+
+def _endpoint_token(url: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", "_", url.strip()).strip("_").lower()
+    return cleaned[-60:] if len(cleaned) > 60 else cleaned
+
+
+def _discover_latest_archived_html_by_id(
+    *,
+    raw_root: Path,
+    id_pattern: re.Pattern[str],
+) -> dict[str, Path]:
+    source_root = raw_root / UFC_STATS_SOURCE
+    if not source_root.exists():
+        return {}
+
+    latest_by_id: dict[str, Path] = {}
+    for path in source_root.rglob("*.html"):
+        match = id_pattern.search(path.name)
+        if match is None:
+            continue
+        entity_id = match.group("id").lower()
+        existing = latest_by_id.get(entity_id)
+        if existing is None or path.as_posix() > existing.as_posix():
+            latest_by_id[entity_id] = path
+    return latest_by_id
+
+
+def _stable_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _coalesce(value: str | None, fallback: str) -> str:
+    return value if value is not None else fallback
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+===== src/validation/data_coverage_audit.py =====
+"""Data coverage and feature completeness audit reporting."""
+
+from __future__ import annotations
+
+import csv
+import sqlite3
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Mapping, Sequence
+
+from features import DEFAULT_KEY_FEATURES, build_feature_report
+
+
+@dataclass(frozen=True)
+class DataCoverageAuditResult:
+    """Persisted audit report summary."""
+
+    report_path: Path
+    total_events: int
+    total_completed_bouts: int
+    total_fighters: int
+    total_fighter_bout_stats_rows: int
+    completed_bouts_with_two_stats_rows: int
+    completed_bouts_with_one_stats_row: int
+    completed_bouts_with_zero_stats_rows: int
+
+
+def run_data_coverage_audit(
+    *,
+    db_path: Path,
+    promotion: str,
+    features_path: Path,
+    report_output_path: Path,
+    key_features: Sequence[str] = DEFAULT_KEY_FEATURES,
+) -> DataCoverageAuditResult:
+    """Build a plain-text audit of coverage, missingness, and join failures."""
+
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        counts = _load_counts(connection=connection, promotion=promotion)
+        bout_stats_coverage = _load_bout_stats_coverage(connection=connection, promotion=promotion)
+        bout_stats_coverage_by_year = _load_bout_stats_coverage_by_year(connection=connection, promotion=promotion)
+        parser_path_proxy = _load_bout_stats_parser_path_proxy(connection=connection, promotion=promotion)
+        date_spans = _load_date_spans(connection=connection, promotion=promotion)
+        join_failures = dict(_load_join_failures(connection=connection, promotion=promotion))
+        fighter_meta = _load_fighter_meta_flags(connection=connection)
+        valid_feature_keys = _load_valid_feature_join_keys(connection=connection, promotion=promotion)
+
+    feature_report = build_feature_report(features_path=features_path, key_features=key_features)
+    feature_rows = _load_feature_rows(features_path=features_path)
+    join_failures.update(_feature_join_failures(feature_rows=feature_rows, valid_keys=valid_feature_keys))
+    missingness_reasons = _build_missingness_reasons(
+        feature_rows=feature_rows,
+        key_features=key_features,
+        fighter_meta=fighter_meta,
+    )
+
+    lines = [
+        "data_coverage_audit_report",
+        f"promotion={promotion}",
+        "coverage_totals",
+        f"total_events={counts['total_events']}",
+        f"total_completed_bouts={counts['total_completed_bouts']}",
+        f"total_fighters={counts['total_fighters']}",
+        f"total_fighter_bout_stats_rows={counts['total_fighter_bout_stats_rows']}",
+        "bout_stats_coverage_totals",
+        f"completed_bouts={bout_stats_coverage['completed_bouts']}",
+        f"bouts_with_two_stats_rows={bout_stats_coverage['bouts_with_two_stats_rows']}",
+        f"bouts_with_one_stats_row={bout_stats_coverage['bouts_with_one_stats_row']}",
+        f"bouts_with_zero_stats_rows={bout_stats_coverage['bouts_with_zero_stats_rows']}",
+        "bout_stats_coverage_by_year",
+    ]
+    if not bout_stats_coverage_by_year:
+        lines.append("year=n/a completed_bouts=0 bouts_with_two_stats_rows=0 bouts_with_one_stats_row=0 bouts_with_zero_stats_rows=0")
+    else:
+        for row in bout_stats_coverage_by_year:
+            lines.append(
+                (
+                    f"year={row['year']} completed_bouts={row['completed_bouts']} "
+                    f"bouts_with_two_stats_rows={row['bouts_with_two_stats_rows']} "
+                    f"bouts_with_one_stats_row={row['bouts_with_one_stats_row']} "
+                    f"bouts_with_zero_stats_rows={row['bouts_with_zero_stats_rows']}"
+                )
+            )
+
+    lines.extend(
+        [
+            "bout_stats_parser_path_proxy",
+            *[f"{key}={value}" for key, value in sorted(parser_path_proxy.items())],
+            "feature_coverage",
+        ]
+    )
+    for feature_name in key_features:
+        coverage = feature_report.coverage_rates.get(feature_name, 0.0)
+        missing = feature_report.missing_counts.get(feature_name, 0)
+        lines.append(f"feature={feature_name} coverage={coverage:.8f} missing={missing}")
+
+    lines.append("feature_missingness_reasons")
+    for feature_name in key_features:
+        reasons = missingness_reasons.get(feature_name, {})
+        if len(reasons) == 0:
+            lines.append(f"feature={feature_name} reason=none count=0")
+            continue
+        for reason, count in sorted(reasons.items(), key=lambda item: (-item[1], item[0])):
+            lines.append(f"feature={feature_name} reason={reason} count={count}")
+
+    lines.append("earliest_latest_dates")
+    for table_name, span in date_spans.items():
+        lines.append(f"table={table_name} earliest={span[0]} latest={span[1]}")
+
+    lines.append("join_matching_failures")
+    for key, value in sorted(join_failures.items()):
+        lines.append(f"{key}={value}")
+
+    report_output_path.parent.mkdir(parents=True, exist_ok=True)
+    report_output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    return DataCoverageAuditResult(
+        report_path=report_output_path,
+        total_events=int(counts["total_events"]),
+        total_completed_bouts=int(counts["total_completed_bouts"]),
+        total_fighters=int(counts["total_fighters"]),
+        total_fighter_bout_stats_rows=int(counts["total_fighter_bout_stats_rows"]),
+        completed_bouts_with_two_stats_rows=int(bout_stats_coverage["bouts_with_two_stats_rows"]),
+        completed_bouts_with_one_stats_row=int(bout_stats_coverage["bouts_with_one_stats_row"]),
+        completed_bouts_with_zero_stats_rows=int(bout_stats_coverage["bouts_with_zero_stats_rows"]),
+    )
+
+
+def _load_counts(*, connection: sqlite3.Connection, promotion: str) -> Mapping[str, str]:
+    cursor = connection.cursor()
+    return {
+        "total_events": str(
+            _single_count(cursor, "SELECT COUNT(*) FROM events WHERE UPPER(promotion) = UPPER(?)", promotion)
+        ),
+        "total_completed_bouts": str(
+            _single_count(
+                cursor,
+                """
+                SELECT COUNT(*)
+                FROM bouts AS b
+                JOIN events AS e ON e.event_id = b.event_id
+                WHERE UPPER(e.promotion) = UPPER(?)
+                  AND b.winner_fighter_id IS NOT NULL
+                """,
+                promotion,
+            )
+        ),
+        "total_fighters": str(_single_count(cursor, "SELECT COUNT(*) FROM fighters")),
+        "total_fighter_bout_stats_rows": str(_single_count(cursor, "SELECT COUNT(*) FROM fighter_bout_stats")),
+    }
+
+
+def _load_date_spans(*, connection: sqlite3.Connection, promotion: str) -> dict[str, tuple[str, str]]:
+    spans: dict[str, tuple[str, str]] = {}
+    cursor = connection.cursor()
+    rows = {
+        "events": cursor.execute(
+            "SELECT MIN(event_date_utc), MAX(event_date_utc) FROM events WHERE UPPER(promotion) = UPPER(?)",
+            (promotion,),
+        ).fetchone(),
+        "bouts": cursor.execute(
+            """
+            SELECT
+                MIN(COALESCE(b.bout_start_time_utc, e.event_date_utc)),
+                MAX(COALESCE(b.bout_start_time_utc, e.event_date_utc))
+            FROM bouts AS b
+            JOIN events AS e ON e.event_id = b.event_id
+            WHERE UPPER(e.promotion) = UPPER(?)
+            """,
+            (promotion,),
+        ).fetchone(),
+        "fighter_bout_stats": cursor.execute(
+            """
+            SELECT
+                MIN(COALESCE(b.bout_start_time_utc, e.event_date_utc)),
+                MAX(COALESCE(b.bout_start_time_utc, e.event_date_utc))
+            FROM fighter_bout_stats AS s
+            JOIN bouts AS b ON b.bout_id = s.bout_id
+            JOIN events AS e ON e.event_id = b.event_id
+            WHERE UPPER(e.promotion) = UPPER(?)
+            """,
+            (promotion,),
+        ).fetchone(),
+        "markets": cursor.execute(
+            """
+            SELECT MIN(m.market_timestamp_utc), MAX(m.market_timestamp_utc)
+            FROM markets AS m
+            JOIN bouts AS b ON b.bout_id = m.bout_id
+            JOIN events AS e ON e.event_id = b.event_id
+            WHERE UPPER(e.promotion) = UPPER(?)
+            """,
+            (promotion,),
+        ).fetchone(),
+        "model_predictions": cursor.execute(
+            """
+            SELECT MIN(p.generated_at_utc), MAX(p.generated_at_utc)
+            FROM model_predictions AS p
+            JOIN bouts AS b ON b.bout_id = p.bout_id
+            JOIN events AS e ON e.event_id = b.event_id
+            WHERE UPPER(e.promotion) = UPPER(?)
+            """,
+            (promotion,),
+        ).fetchone(),
+    }
+    for table_name, row in rows.items():
+        earliest = "n/a" if row is None or row[0] is None else str(row[0])
+        latest = "n/a" if row is None or row[1] is None else str(row[1])
+        spans[table_name] = (earliest, latest)
+    return spans
+
+
+def _load_bout_stats_coverage(*, connection: sqlite3.Connection, promotion: str) -> dict[str, str]:
+    row = connection.execute(
+        """
+        WITH completed AS (
+            SELECT b.bout_id, COUNT(s.fighter_bout_stats_id) AS stat_rows
+            FROM bouts AS b
+            JOIN events AS e ON e.event_id = b.event_id
+            LEFT JOIN fighter_bout_stats AS s ON s.bout_id = b.bout_id
+            WHERE UPPER(e.promotion) = UPPER(?)
+              AND b.winner_fighter_id IS NOT NULL
+            GROUP BY b.bout_id
+        )
+        SELECT
+            COUNT(*) AS completed_bouts,
+            SUM(CASE WHEN stat_rows = 2 THEN 1 ELSE 0 END) AS bouts_with_two_stats_rows,
+            SUM(CASE WHEN stat_rows = 1 THEN 1 ELSE 0 END) AS bouts_with_one_stats_row,
+            SUM(CASE WHEN stat_rows = 0 THEN 1 ELSE 0 END) AS bouts_with_zero_stats_rows
+        FROM completed
+        """,
+        (promotion,),
+    ).fetchone()
+    if row is None:
+        return {
+            "completed_bouts": "0",
+            "bouts_with_two_stats_rows": "0",
+            "bouts_with_one_stats_row": "0",
+            "bouts_with_zero_stats_rows": "0",
+        }
+    return {
+        "completed_bouts": str(int(row[0] or 0)),
+        "bouts_with_two_stats_rows": str(int(row[1] or 0)),
+        "bouts_with_one_stats_row": str(int(row[2] or 0)),
+        "bouts_with_zero_stats_rows": str(int(row[3] or 0)),
+    }
+
+
+def _load_bout_stats_coverage_by_year(*, connection: sqlite3.Connection, promotion: str) -> list[dict[str, str]]:
+    rows = connection.execute(
+        """
+        WITH completed AS (
+            SELECT
+                b.bout_id,
+                strftime('%Y', COALESCE(b.bout_start_time_utc, e.event_date_utc)) AS year,
+                COUNT(s.fighter_bout_stats_id) AS stat_rows
+            FROM bouts AS b
+            JOIN events AS e ON e.event_id = b.event_id
+            LEFT JOIN fighter_bout_stats AS s ON s.bout_id = b.bout_id
+            WHERE UPPER(e.promotion) = UPPER(?)
+              AND b.winner_fighter_id IS NOT NULL
+            GROUP BY b.bout_id, year
+        )
+        SELECT
+            year,
+            COUNT(*) AS completed_bouts,
+            SUM(CASE WHEN stat_rows = 2 THEN 1 ELSE 0 END) AS bouts_with_two_stats_rows,
+            SUM(CASE WHEN stat_rows = 1 THEN 1 ELSE 0 END) AS bouts_with_one_stats_row,
+            SUM(CASE WHEN stat_rows = 0 THEN 1 ELSE 0 END) AS bouts_with_zero_stats_rows
+        FROM completed
+        GROUP BY year
+        ORDER BY year
+        """,
+        (promotion,),
+    ).fetchall()
+    return [
+        {
+            "year": str(row[0]),
+            "completed_bouts": str(int(row[1] or 0)),
+            "bouts_with_two_stats_rows": str(int(row[2] or 0)),
+            "bouts_with_one_stats_row": str(int(row[3] or 0)),
+            "bouts_with_zero_stats_rows": str(int(row[4] or 0)),
+        }
+        for row in rows
+    ]
+
+
+def _load_bout_stats_parser_path_proxy(*, connection: sqlite3.Connection, promotion: str) -> dict[str, str]:
+    row = connection.execute(
+        """
+        SELECT
+            SUM(
+                CASE WHEN
+                    s.sig_strikes_attempted IS NOT NULL
+                    OR s.total_strikes_landed IS NOT NULL
+                    OR s.total_strikes_attempted IS NOT NULL
+                    OR s.takedowns_attempted IS NOT NULL
+                    OR s.reversals IS NOT NULL
+                    OR s.control_time_seconds IS NOT NULL
+                THEN 1 ELSE 0 END
+            ) AS rows_with_fight_details_shape,
+            SUM(
+                CASE WHEN
+                    s.sig_strikes_attempted IS NULL
+                    AND s.total_strikes_landed IS NULL
+                    AND s.total_strikes_attempted IS NULL
+                    AND s.takedowns_attempted IS NULL
+                    AND s.reversals IS NULL
+                    AND s.control_time_seconds IS NULL
+                    AND (
+                        s.knockdowns IS NOT NULL
+                        OR s.sig_strikes_landed IS NOT NULL
+                        OR s.takedowns_landed IS NOT NULL
+                        OR s.submission_attempts IS NOT NULL
+                    )
+                THEN 1 ELSE 0 END
+            ) AS rows_with_event_details_fallback_shape,
+            SUM(
+                CASE WHEN
+                    s.knockdowns IS NULL
+                    AND s.sig_strikes_landed IS NULL
+                    AND s.sig_strikes_attempted IS NULL
+                    AND s.total_strikes_landed IS NULL
+                    AND s.total_strikes_attempted IS NULL
+                    AND s.takedowns_landed IS NULL
+                    AND s.takedowns_attempted IS NULL
+                    AND s.submission_attempts IS NULL
+                    AND s.reversals IS NULL
+                    AND s.control_time_seconds IS NULL
+                THEN 1 ELSE 0 END
+            ) AS rows_with_empty_stats_shape
+        FROM fighter_bout_stats AS s
+        JOIN bouts AS b ON b.bout_id = s.bout_id
+        JOIN events AS e ON e.event_id = b.event_id
+        WHERE UPPER(e.promotion) = UPPER(?)
+        """,
+        (promotion,),
+    ).fetchone()
+    if row is None:
+        return {
+            "rows_with_fight_details_shape": "0",
+            "rows_with_event_details_fallback_shape": "0",
+            "rows_with_empty_stats_shape": "0",
+        }
+    return {
+        "rows_with_fight_details_shape": str(int(row[0] or 0)),
+        "rows_with_event_details_fallback_shape": str(int(row[1] or 0)),
+        "rows_with_empty_stats_shape": str(int(row[2] or 0)),
+    }
+
+
+def _load_join_failures(*, connection: sqlite3.Connection, promotion: str) -> Mapping[str, str]:
+    cursor = connection.cursor()
+    total_bouts = _single_count(
+        cursor,
+        """
+        SELECT COUNT(*)
+        FROM bouts AS b
+        JOIN events AS e ON e.event_id = b.event_id
+        WHERE UPPER(e.promotion) = UPPER(?)
+        """,
+        promotion,
+    )
+    return {
+        "bouts_missing_red_fighter": str(
+            _single_count(
+                cursor,
+                """
+                SELECT COUNT(*)
+                FROM bouts AS b
+                JOIN events AS e ON e.event_id = b.event_id
+                LEFT JOIN fighters AS f ON f.fighter_id = b.fighter_red_id
+                WHERE UPPER(e.promotion) = UPPER(?)
+                  AND f.fighter_id IS NULL
+                """,
+                promotion,
+            )
+        ),
+        "bouts_missing_blue_fighter": str(
+            _single_count(
+                cursor,
+                """
+                SELECT COUNT(*)
+                FROM bouts AS b
+                JOIN events AS e ON e.event_id = b.event_id
+                LEFT JOIN fighters AS f ON f.fighter_id = b.fighter_blue_id
+                WHERE UPPER(e.promotion) = UPPER(?)
+                  AND f.fighter_id IS NULL
+                """,
+                promotion,
+            )
+        ),
+        "bouts_without_two_stats_rows": str(
+            _single_count(
+                cursor,
+                """
+                SELECT COUNT(*)
+                FROM (
+                    SELECT b.bout_id, COUNT(s.fighter_bout_stats_id) AS stat_rows
+                    FROM bouts AS b
+                    JOIN events AS e ON e.event_id = b.event_id
+                    LEFT JOIN fighter_bout_stats AS s ON s.bout_id = b.bout_id
+                    WHERE UPPER(e.promotion) = UPPER(?)
+                    GROUP BY b.bout_id
+                    HAVING stat_rows < 2
+                )
+                """,
+                promotion,
+            )
+        ),
+        "fighter_bout_stats_missing_fighter": str(
+            _single_count(
+                cursor,
+                """
+                SELECT COUNT(*)
+                FROM fighter_bout_stats AS s
+                LEFT JOIN fighters AS f ON f.fighter_id = s.fighter_id
+                WHERE f.fighter_id IS NULL
+                """,
+            )
+        ),
+        "fighter_bout_stats_missing_opponent": str(
+            _single_count(
+                cursor,
+                """
+                SELECT COUNT(*)
+                FROM fighter_bout_stats AS s
+                LEFT JOIN fighters AS f ON f.fighter_id = s.opponent_fighter_id
+                WHERE f.fighter_id IS NULL
+                """,
+            )
+        ),
+        "expected_feature_rows_from_bouts": str(total_bouts * 2),
+    }
+
+
+def _load_valid_feature_join_keys(*, connection: sqlite3.Connection, promotion: str) -> set[tuple[str, str, str]]:
+    rows = connection.execute(
+        """
+        SELECT b.bout_id, b.fighter_red_id, b.fighter_blue_id
+        FROM bouts AS b
+        JOIN events AS e ON e.event_id = b.event_id
+        WHERE UPPER(e.promotion) = UPPER(?)
+        """,
+        (promotion,),
+    ).fetchall()
+    keys: set[tuple[str, str, str]] = set()
+    for row in rows:
+        bout_id = str(row[0])
+        red = str(row[1])
+        blue = str(row[2])
+        keys.add((bout_id, red, blue))
+        keys.add((bout_id, blue, red))
+    return keys
+
+
+def _feature_join_failures(
+    *,
+    feature_rows: Sequence[Mapping[str, str]],
+    valid_keys: set[tuple[str, str, str]],
+) -> Mapping[str, str]:
+    total = len(feature_rows)
+    missing = 0
+    for row in feature_rows:
+        key = (
+            str(row.get("bout_id", "")).strip(),
+            str(row.get("fighter_id", "")).strip(),
+            str(row.get("opponent_id", "")).strip(),
+        )
+        if key not in valid_keys:
+            missing += 1
+    return {
+        "feature_rows_total": str(total),
+        "feature_rows_without_bout_fighter_match": str(missing),
+    }
+
+
+def _load_feature_rows(*, features_path: Path) -> list[dict[str, str]]:
+    with features_path.open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
+def _load_fighter_meta_flags(*, connection: sqlite3.Connection) -> dict[str, tuple[bool, bool, bool, bool]]:
+    rows = connection.execute(
+        "SELECT fighter_id, date_of_birth_utc, height_cm, reach_cm, stance FROM fighters"
+    ).fetchall()
+    result: dict[str, tuple[bool, bool, bool, bool]] = {}
+    for row in rows:
+        fighter_id = str(row[0])
+        result[fighter_id] = (
+            row[1] not in (None, ""),
+            row[2] is not None,
+            row[3] is not None,
+            row[4] not in (None, ""),
+        )
+    return result
+
+
+def _build_missingness_reasons(
+    *,
+    feature_rows: Sequence[Mapping[str, str]],
+    key_features: Sequence[str],
+    fighter_meta: Mapping[str, tuple[bool, bool, bool, bool]],
+) -> dict[str, dict[str, int]]:
+    reasons: dict[str, dict[str, int]] = {feature: {} for feature in key_features}
+    for row in feature_rows:
+        fighter_id = str(row.get("fighter_id", "")).strip()
+        opponent_id = str(row.get("opponent_id", "")).strip()
+        prior_count = _as_int(row.get("prior_fight_count"))
+        fighter_flags = fighter_meta.get(fighter_id, (False, False, False, False))
+        opponent_flags = fighter_meta.get(opponent_id, (False, False, False, False))
+
+        for feature in key_features:
+            value = str(row.get(feature, "")).strip()
+            if value != "":
+                continue
+            reason = _reason_for_missing_feature(
+                feature=feature,
+                prior_count=prior_count,
+                fighter_flags=fighter_flags,
+                opponent_flags=opponent_flags,
+            )
+            bucket = reasons.setdefault(feature, {})
+            bucket[reason] = bucket.get(reason, 0) + 1
+    return reasons
+
+
+def _reason_for_missing_feature(
+    *,
+    feature: str,
+    prior_count: int | None,
+    fighter_flags: tuple[bool, bool, bool, bool],
+    opponent_flags: tuple[bool, bool, bool, bool],
+) -> str:
+    fighter_has_dob, fighter_has_height, fighter_has_reach, _fighter_has_stance = fighter_flags
+    _, opponent_has_height, opponent_has_reach, _opponent_has_stance = opponent_flags
+
+    if feature == "fighter_age_years":
+        return "missing_fighter_dob" if not fighter_has_dob else "unknown"
+    if feature == "height_diff_cm":
+        return "missing_height_metadata" if not (fighter_has_height and opponent_has_height) else "unknown"
+    if feature == "reach_diff_cm":
+        return "missing_reach_metadata" if not (fighter_has_reach and opponent_has_reach) else "unknown"
+    if feature in {"days_since_last_fight", "prior_fight_count", "finish_rate_all", "decision_rate_all", "rematch_flag"}:
+        return "no_prior_fights" if (prior_count is None or prior_count < 1) else "missing_history_row"
+    if feature in {"recent_form_win_rate_l3", "opponent_strength_avg_l3"}:
+        if prior_count is None or prior_count < 1:
+            return "no_prior_fights"
+        if prior_count < 3:
+            return "insufficient_prior_fights_l3"
+        return "missing_recent_window_stats"
+    if feature in {"recent_form_win_rate_l5", "opponent_strength_avg_l5"}:
+        if prior_count is None or prior_count < 1:
+            return "no_prior_fights"
+        if prior_count < 5:
+            return "insufficient_prior_fights_l5"
+        return "missing_recent_window_stats"
+    if feature in {
+        "sig_strikes_landed_per_min_all",
+        "sig_striking_accuracy_all",
+        "sig_striking_defense_all",
+        "takedown_attempts_per_15m_all",
+        "takedown_accuracy_all",
+        "takedown_defense_all",
+        "submission_attempts_per_15m_all",
+        "avg_fight_duration_seconds_all",
+    }:
+        return "no_prior_fights" if (prior_count is None or prior_count < 1) else "missing_historical_bout_stats"
+    if feature == "weight_class_experience":
+        return "no_prior_fights_or_weight_class_history" if (prior_count is None or prior_count < 1) else "missing_weight_class_history"
+    return "unknown"
+
+
+def _as_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(str(value))
+    except ValueError:
+        return None
+
+
+def _single_count(cursor: sqlite3.Cursor, query: str, *params: object) -> int:
+    row = cursor.execute(query, params).fetchone()
+    return int(row[0] if row is not None else 0)
+
+===== src/orchestration/workflow.py =====
+"""Reproducible, fail-fast workflow orchestration for MMA research pipeline."""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Mapping, Optional, Sequence
+
+from backtest import run_betting_backtest
+from evaluation import (
+    compare_registered_models,
+    discover_model_registry,
+    run_ablation_experiments,
+    run_calibration_diagnostics,
+    run_walk_forward_evaluation,
+)
+from features import build_feature_report, generate_pre_fight_features
+from ingestion.sources.ufc_stats import (
+    run_ufc_stats_bout_stats_ingestion,
+    run_ufc_stats_events_ingestion,
+    run_ufc_stats_fighter_metadata_ingestion,
+)
+from models import run_baseline_models
+from ratings import EloConfig, build_ratings_report, generate_elo_ratings_history
+from validation import run_data_coverage_audit, run_data_validations
+
+StageDetails = Mapping[str, Any]
+StageRunner = Callable[[], Optional[StageDetails]]
+
+
+@dataclass(frozen=True)
+class WorkflowStage:
+    """Single executable stage definition."""
+
+    name: str
+    description: str
+    runner: StageRunner
+
+
+@dataclass(frozen=True)
+class StageExecutionRecord:
+    """Observed stage execution metadata."""
+
+    name: str
+    description: str
+    status: str
+    started_at_utc: str
+    finished_at_utc: str
+    log_path: Path
+    details: dict[str, str]
+
+
+@dataclass(frozen=True)
+class StageSequenceResult:
+    """Result for a complete stage sequence run."""
+
+    success: bool
+    records: tuple[StageExecutionRecord, ...]
+    failed_stage_name: str | None
+
+
+@dataclass(frozen=True)
+class ResearchWorkflowResult:
+    """End-to-end workflow execution output."""
+
+    success: bool
+    sequence: StageSequenceResult
+    summary_report_path: Path
+
+
+def run_stage_sequence(
+    *,
+    stages: Sequence[WorkflowStage],
+    log_dir: Path,
+    workflow_log_path: Path,
+) -> StageSequenceResult:
+    """Execute stages in order with per-stage logging and fail-fast behavior."""
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+    workflow_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    records: list[StageExecutionRecord] = []
+
+    _append_line(workflow_log_path, f"workflow_started_at_utc={_utc_now_iso()}")
+
+    for index, stage in enumerate(stages, start=1):
+        stage_log_path = log_dir / f"{index:02d}_{stage.name}.log"
+        started_at = _utc_now_iso()
+        _append_line(stage_log_path, f"stage={stage.name}")
+        _append_line(stage_log_path, f"description={stage.description}")
+        _append_line(stage_log_path, f"started_at_utc={started_at}")
+
+        status = "ok"
+        details: dict[str, str]
+
+        try:
+            details = _normalize_details(stage.runner())
+        except Exception as exc:  # noqa: BLE001 - explicit fail-fast boundary for stage runners
+            status = "failed"
+            details = {
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+
+        finished_at = _utc_now_iso()
+        _append_line(stage_log_path, f"finished_at_utc={finished_at}")
+        _append_line(stage_log_path, f"status={status}")
+        for key, value in sorted(details.items()):
+            _append_line(stage_log_path, f"{key}={value}")
+
+        record = StageExecutionRecord(
+            name=stage.name,
+            description=stage.description,
+            status=status,
+            started_at_utc=started_at,
+            finished_at_utc=finished_at,
+            log_path=stage_log_path,
+            details=details,
+        )
+        records.append(record)
+
+        _append_line(
+            workflow_log_path,
+            (
+                f"stage={record.name} status={record.status} "
+                f"started_at_utc={record.started_at_utc} finished_at_utc={record.finished_at_utc} "
+                f"log_path={record.log_path.as_posix()}"
+            ),
+        )
+
+        if status != "ok":
+            _append_line(workflow_log_path, f"workflow_status=failed failed_stage={record.name}")
+            return StageSequenceResult(
+                success=False,
+                records=tuple(records),
+                failed_stage_name=record.name,
+            )
+
+    _append_line(workflow_log_path, "workflow_status=ok")
+    return StageSequenceResult(success=True, records=tuple(records), failed_stage_name=None)
+
+
+def run_research_workflow(
+    *,
+    db_path: Path,
+    raw_root: Path,
+    run_ingestion: bool,
+    promotion: str,
+    event_limit: int | None,
+    fighter_limit: int | None,
+    train_fraction: float,
+    window_type: str,
+    min_train_bouts: int,
+    test_bouts: int,
+    rolling_train_bouts: int | None,
+    model_version: str,
+    model_run_id: str | None,
+    calibration_bins: int,
+    min_edge: float,
+    flat_stake: float,
+    kelly_fraction: float | None,
+    initial_bankroll: float,
+    vig_adjustment: str,
+    allow_multiple_bets_per_bout: bool,
+    features_output_path: Path,
+    ratings_output_path: Path,
+    baseline_predictions_output_path: Path,
+    baseline_report_output_path: Path,
+    walk_forward_predictions_output_path: Path,
+    walk_forward_report_output_path: Path,
+    ablation_predictions_output_path: Path,
+    ablation_comparison_report_output_path: Path,
+    ablation_contribution_report_output_path: Path,
+    calibration_output_dir: Path,
+    calibration_report_output_path: Path,
+    model_comparison_report_output_path: Path,
+    data_coverage_audit_report_output_path: Path,
+    backtest_report_output_path: Path,
+    summary_report_path: Path,
+    log_dir: Path,
+    workflow_log_path: Path,
+) -> ResearchWorkflowResult:
+    """Run the full research workflow and write a final stage-by-stage summary report."""
+
+    state: dict[str, str] = {}
+
+    def _ingestion_snapshot_stage() -> StageDetails:
+        return _collect_ingestion_snapshot(db_path)
+
+    def _ingest_events_stage() -> StageDetails:
+        result = run_ufc_stats_events_ingestion(
+            db_path=db_path,
+            raw_root=raw_root,
+            event_limit=event_limit,
+        )
+        return {
+            "inserted": result.inserted_count,
+            "updated": result.updated_count,
+            "skipped": result.skipped_count,
+        }
+
+    def _ingest_fighters_stage() -> StageDetails:
+        result = run_ufc_stats_fighter_metadata_ingestion(
+            db_path=db_path,
+            raw_root=raw_root,
+            fighter_limit=fighter_limit,
+        )
+        return {
+            "inserted": result.inserted_count,
+            "updated": result.updated_count,
+            "skipped": result.skipped_count,
+        }
+
+    def _ingest_bout_stats_stage() -> StageDetails:
+        result = run_ufc_stats_bout_stats_ingestion(
+            db_path=db_path,
+            raw_root=raw_root,
+            event_limit=event_limit,
+        )
+        return {
+            "inserted": result.inserted_count,
+            "updated": result.updated_count,
+            "skipped": result.skipped_count,
+        }
+
+    def _validate_data_stage() -> StageDetails:
+        with sqlite3.connect(db_path) as connection:
+            report = run_data_validations(connection)
+        if not report.is_valid:
+            raise ValueError(f"data_validations_failed issue_count={report.issue_count}")
+        return {"issues": report.issue_count, "status": "ok"}
+
+    def _data_coverage_stage() -> StageDetails:
+        return _collect_data_coverage_snapshot(db_path=db_path, promotion=promotion)
+
+    def _generate_features_stage() -> StageDetails:
+        row_count, persisted_path = generate_pre_fight_features(
+            db_path=db_path,
+            output_path=features_output_path,
+            promotion=promotion,
+        )
+        return {
+            "rows": row_count,
+            "features_path": persisted_path.as_posix(),
+        }
+
+    def _feature_coverage_stage() -> StageDetails:
+        report = build_feature_report(features_path=features_output_path)
+        coverage_values = tuple(report.coverage_rates.values())
+        avg_coverage = 0.0 if len(coverage_values) == 0 else sum(coverage_values) / float(len(coverage_values))
+        min_coverage = 0.0 if len(coverage_values) == 0 else min(coverage_values)
+        return {
+            "rows": report.row_count,
+            "bouts": report.bout_count,
+            "earliest_bout_utc": report.earliest_bout_date_utc or "n/a",
+            "latest_bout_utc": report.latest_bout_date_utc or "n/a",
+            "avg_key_feature_coverage": f"{avg_coverage:.8f}",
+            "min_key_feature_coverage": f"{min_coverage:.8f}",
+        }
+
+    def _data_coverage_audit_stage() -> StageDetails:
+        audit = run_data_coverage_audit(
+            db_path=db_path,
+            promotion=promotion,
+            features_path=features_output_path,
+            report_output_path=data_coverage_audit_report_output_path,
+        )
+        return {
+            "total_events": audit.total_events,
+            "total_completed_bouts": audit.total_completed_bouts,
+            "total_fighters": audit.total_fighters,
+            "total_fighter_bout_stats_rows": audit.total_fighter_bout_stats_rows,
+            "completed_bouts_with_two_stats_rows": audit.completed_bouts_with_two_stats_rows,
+            "completed_bouts_with_one_stats_row": audit.completed_bouts_with_one_stats_row,
+            "completed_bouts_with_zero_stats_rows": audit.completed_bouts_with_zero_stats_rows,
+            "report_path": audit.report_path.as_posix(),
+        }
+
+    def _build_ratings_stage() -> StageDetails:
+        result = generate_elo_ratings_history(
+            db_path=db_path,
+            output_path=ratings_output_path,
+            config=EloConfig(promotion=promotion),
+        )
+        return {
+            "bouts": result.bout_count,
+            "rows": result.row_count,
+            "ratings_path": result.output_path.as_posix(),
+        }
+
+    def _ratings_coverage_stage() -> StageDetails:
+        report = build_ratings_report(
+            ratings_history_path=ratings_output_path,
+            db_path=db_path,
+            top_n=10,
+        )
+        return {
+            "rated_fighters": report.rated_fighters,
+            "total_fighters": report.total_fighters,
+            "coverage_rate": f"{report.coverage_rate:.8f}",
+            "earliest_rating_utc": report.earliest_rating_datetime_utc or "n/a",
+            "latest_rating_utc": report.latest_rating_datetime_utc or "n/a",
+            "top_weight_class_count": len(report.weight_class_coverage),
+        }
+
+    def _train_baselines_stage() -> StageDetails:
+        result = run_baseline_models(
+            db_path=db_path,
+            promotion=promotion,
+            train_fraction=train_fraction,
+            model_version=model_version,
+            model_run_id=model_run_id,
+            features_output_path=features_output_path,
+            ratings_output_path=ratings_output_path,
+            predictions_output_path=baseline_predictions_output_path,
+            report_output_path=baseline_report_output_path,
+        )
+        state["baseline_model_run_id"] = result.model_run_id
+        return {
+            "model_run_id": result.model_run_id,
+            "predictions": result.prediction_count,
+            "scored_bouts": result.scored_bout_count,
+            "predictions_path": result.predictions_path.as_posix(),
+            "report_path": result.report_path.as_posix(),
+        }
+
+    def _walk_forward_stage() -> StageDetails:
+        window_settings = _resolve_walk_forward_window_settings(
+            db_path=db_path,
+            promotion=promotion,
+            window_type=window_type,
+            min_train_bouts=min_train_bouts,
+            test_bouts=test_bouts,
+            rolling_train_bouts=rolling_train_bouts,
+        )
+        result = run_walk_forward_evaluation(
+            db_path=db_path,
+            promotion=promotion,
+            window_type=window_type,
+            min_train_bouts=int(window_settings["effective_min_train_bouts"]),
+            test_bouts=int(window_settings["effective_test_bouts"]),
+            rolling_train_bouts=(
+                None
+                if window_settings["effective_rolling_train_bouts"] == "n/a"
+                else int(window_settings["effective_rolling_train_bouts"])
+            ),
+            model_version=model_version,
+            model_run_id=model_run_id,
+            calibration_bins=calibration_bins,
+            ratings_output_path=ratings_output_path,
+            predictions_output_path=walk_forward_predictions_output_path,
+            report_output_path=walk_forward_report_output_path,
+        )
+        state["walk_forward_model_run_id"] = result.model_run_id
+        return {
+            "model_run_id": result.model_run_id,
+            "folds": result.fold_count,
+            "predictions": result.predictions_count,
+            "log_loss": f"{result.aggregate_log_loss:.8f}",
+            "brier_score": f"{result.aggregate_brier_score:.8f}",
+            "hit_rate": f"{result.aggregate_hit_rate:.8f}",
+            "completed_bouts_available": window_settings["completed_bouts_available"],
+            "configured_min_train_bouts": window_settings["configured_min_train_bouts"],
+            "configured_test_bouts": window_settings["configured_test_bouts"],
+            "effective_min_train_bouts": window_settings["effective_min_train_bouts"],
+            "effective_test_bouts": window_settings["effective_test_bouts"],
+            "effective_rolling_train_bouts": window_settings["effective_rolling_train_bouts"],
+            "window_auto_adjusted": window_settings["window_auto_adjusted"],
+            "predictions_path": result.predictions_path.as_posix(),
+            "report_path": result.report_path.as_posix(),
+        }
+
+    def _calibration_stage() -> StageDetails:
+        result = run_calibration_diagnostics(
+            db_path=db_path,
+            predictions_path=walk_forward_predictions_output_path,
+            output_dir=calibration_output_dir,
+            report_output_path=calibration_report_output_path,
+            promotion=promotion,
+            model_name="elo_logistic",
+            model_run_id=state.get("walk_forward_model_run_id"),
+            calibration_bins=calibration_bins,
+        )
+        return {
+            "model_run_id": result.model_run_id,
+            "predictions_loaded": result.predictions_loaded,
+            "predictions_used": result.predictions_used,
+            "dropped_chronology_invalid": result.dropped_chronology_invalid,
+            "dropped_missing_probability": result.dropped_missing_probability,
+            "dropped_invalid_label": result.dropped_invalid_label,
+            "ece": f"{result.aggregate_calibration.expected_calibration_error:.8f}",
+            "mce": f"{result.aggregate_calibration.maximum_calibration_error:.8f}",
+            "log_loss": f"{result.aggregate_log_loss:.8f}",
+            "brier_score": f"{result.aggregate_brier_score:.8f}",
+            "report_path": result.report_path.as_posix(),
+        }
+
+    def _ablation_stage() -> StageDetails:
+        window_settings = _resolve_walk_forward_window_settings(
+            db_path=db_path,
+            promotion=promotion,
+            window_type=window_type,
+            min_train_bouts=min_train_bouts,
+            test_bouts=test_bouts,
+            rolling_train_bouts=rolling_train_bouts,
+        )
+        result = run_ablation_experiments(
+            db_path=db_path,
+            promotion=promotion,
+            window_type=window_type,
+            min_train_bouts=int(window_settings["effective_min_train_bouts"]),
+            test_bouts=int(window_settings["effective_test_bouts"]),
+            rolling_train_bouts=(
+                None
+                if window_settings["effective_rolling_train_bouts"] == "n/a"
+                else int(window_settings["effective_rolling_train_bouts"])
+            ),
+            model_version=model_version,
+            model_run_id=model_run_id,
+            calibration_bins=calibration_bins,
+            features_output_path=features_output_path,
+            ratings_output_path=ratings_output_path,
+            predictions_output_path=ablation_predictions_output_path,
+            comparison_report_output_path=ablation_comparison_report_output_path,
+            contribution_report_output_path=ablation_contribution_report_output_path,
+        )
+        best = min(result.scenario_metrics, key=lambda row: row.log_loss)
+        return {
+            "model_run_id": result.model_run_id,
+            "folds": result.fold_count,
+            "scenarios": len(result.scenario_metrics),
+            "best_scenario": best.config.scenario_id,
+            "best_log_loss": f"{best.log_loss:.8f}",
+            "best_calibration_ece": f"{best.calibration_ece:.8f}",
+            "completed_bouts_available": window_settings["completed_bouts_available"],
+            "effective_min_train_bouts": window_settings["effective_min_train_bouts"],
+            "effective_test_bouts": window_settings["effective_test_bouts"],
+            "window_auto_adjusted": window_settings["window_auto_adjusted"],
+            "predictions_path": result.predictions_path.as_posix(),
+            "comparison_report_path": result.comparison_report_path.as_posix(),
+            "contribution_report_path": result.contribution_report_path.as_posix(),
+        }
+
+    def _model_comparison_stage() -> StageDetails:
+        registry = discover_model_registry(
+            predictions_paths=(
+                baseline_predictions_output_path,
+                walk_forward_predictions_output_path,
+                ablation_predictions_output_path,
+            )
+        )
+        result = compare_registered_models(
+            db_path=db_path,
+            promotion=promotion,
+            registry=registry,
+            report_output_path=model_comparison_report_output_path,
+            calibration_bins=calibration_bins,
+            min_edge=min_edge,
+            flat_stake=flat_stake,
+            kelly_fraction=kelly_fraction,
+            initial_bankroll=initial_bankroll,
+            vig_adjustment=vig_adjustment,
+            one_bet_per_bout=not allow_multiple_bets_per_bout,
+        )
+        return {
+            "models_compared": len(result.model_summaries),
+            "champion": result.champion_challenger.champion.entry.model_identifier,
+            "challenger": result.champion_challenger.challenger.entry.model_identifier,
+            "best_log_loss_model": result.best_by_metric["log_loss"],
+            "best_roi_model": result.best_by_metric["roi"],
+            "report_path": result.report_path.as_posix(),
+        }
+
+    def _backtest_stage() -> StageDetails:
+        resolved_run_id = state.get("baseline_model_run_id")
+        result = run_betting_backtest(
+            db_path=db_path,
+            predictions_path=baseline_predictions_output_path,
+            report_output_path=backtest_report_output_path,
+            promotion=promotion,
+            model_name="elo_logistic",
+            model_run_id=resolved_run_id,
+            min_edge=min_edge,
+            flat_stake=flat_stake,
+            kelly_fraction=kelly_fraction,
+            initial_bankroll=initial_bankroll,
+            vig_adjustment=vig_adjustment,
+            one_bet_per_bout=not allow_multiple_bets_per_bout,
+        )
+        return {
+            "model_run_id": result.model_run_id,
+            "bets": result.bets_count,
+            "roi": f"{result.roi:.8f}",
+            "max_drawdown": f"{result.max_drawdown:.8f}",
+            "report_path": result.report_path.as_posix(),
+        }
+
+    stages: list[WorkflowStage] = []
+    if run_ingestion:
+        stages.extend(
+            (
+                WorkflowStage(
+                    name="ingestion_events",
+                    description="Ingest UFC completed events and bout outcomes.",
+                    runner=_ingest_events_stage,
+                ),
+                WorkflowStage(
+                    name="ingestion_fighters",
+                    description="Ingest UFC fighter metadata.",
+                    runner=_ingest_fighters_stage,
+                ),
+                WorkflowStage(
+                    name="ingestion_bout_stats",
+                    description="Ingest UFC per-bout fighter stats.",
+                    runner=_ingest_bout_stats_stage,
+                ),
+            )
+        )
+    else:
+        stages.append(
+            WorkflowStage(
+                name="ingestion_snapshot",
+                description="Summarize existing ingested data snapshot (offline mode).",
+                runner=_ingestion_snapshot_stage,
+            )
+        )
+
+    stages.extend(
+        (
+            WorkflowStage(
+                name="validate_data",
+                description="Run chronology and data-integrity validations.",
+                runner=_validate_data_stage,
+            ),
+            WorkflowStage(
+                name="data_coverage",
+                description="Build UFC data coverage snapshot.",
+                runner=_data_coverage_stage,
+            ),
+            WorkflowStage(
+                name="generate_features",
+                description="Generate pre-fight sequential features.",
+                runner=_generate_features_stage,
+            ),
+            WorkflowStage(
+                name="feature_coverage",
+                description="Summarize key feature coverage on generated dataset.",
+                runner=_feature_coverage_stage,
+            ),
+            WorkflowStage(
+                name="data_coverage_audit",
+                description="Generate data coverage audit report and join-failure diagnostics.",
+                runner=_data_coverage_audit_stage,
+            ),
+            WorkflowStage(
+                name="build_ratings_history",
+                description="Generate Elo rating history.",
+                runner=_build_ratings_stage,
+            ),
+            WorkflowStage(
+                name="rating_coverage",
+                description="Summarize rating coverage and temporal span.",
+                runner=_ratings_coverage_stage,
+            ),
+            WorkflowStage(
+                name="train_baselines",
+                description="Train chronology-safe baseline models.",
+                runner=_train_baselines_stage,
+            ),
+            WorkflowStage(
+                name="walk_forward_eval",
+                description="Run chronological walk-forward evaluation.",
+                runner=_walk_forward_stage,
+            ),
+            WorkflowStage(
+                name="calibration_diagnostics",
+                description="Generate calibration diagnostics from walk-forward predictions.",
+                runner=_calibration_stage,
+            ),
+            WorkflowStage(
+                name="run_ablation_experiments",
+                description="Run walk-forward ablation experiments.",
+                runner=_ablation_stage,
+            ),
+            WorkflowStage(
+                name="compare_models",
+                description="Run multi-model comparison and champion/challenger selection.",
+                runner=_model_comparison_stage,
+            ),
+            WorkflowStage(
+                name="run_backtest",
+                description="Run betting simulation on baseline predictions.",
+                runner=_backtest_stage,
+            ),
+        )
+    )
+
+    sequence = run_stage_sequence(stages=stages, log_dir=log_dir, workflow_log_path=workflow_log_path)
+    _write_final_summary(
+        summary_report_path=summary_report_path,
+        sequence=sequence,
+        run_ingestion=run_ingestion,
+    )
+    return ResearchWorkflowResult(success=sequence.success, sequence=sequence, summary_report_path=summary_report_path)
+
+
+def _write_final_summary(
+    *,
+    summary_report_path: Path,
+    sequence: StageSequenceResult,
+    run_ingestion: bool,
+) -> None:
+    summary_report_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_text = build_consolidated_research_summary_text(
+        sequence=sequence,
+        run_ingestion=run_ingestion,
+    )
+    summary_report_path.write_text(summary_text, encoding="utf-8")
+
+
+def build_consolidated_research_summary_text(
+    *,
+    sequence: StageSequenceResult,
+    run_ingestion: bool,
+) -> str:
+    lines = [
+        "MMA Research Workflow Final Summary",
+        f"generated_at_utc: {_utc_now_iso()}",
+        f"status: {'ok' if sequence.success else 'failed'}",
+        f"ingestion_mode: {'live' if run_ingestion else 'offline_snapshot'}",
+        "",
+        "Consolidated research summary:",
+    ]
+
+    lines.extend(_summary_section("data_coverage", _summary_pairs(sequence, "data_coverage")))
+    lines.extend(_summary_section("data_coverage_audit", _summary_pairs(sequence, "data_coverage_audit")))
+    lines.extend(_summary_section("validation_results", _summary_pairs(sequence, "validate_data")))
+    lines.extend(_summary_section("feature_coverage", _summary_pairs(sequence, "feature_coverage")))
+    lines.extend(_summary_section("rating_coverage", _summary_pairs(sequence, "rating_coverage")))
+    lines.extend(_summary_section("model_comparison", _summary_pairs(sequence, "compare_models")))
+    lines.extend(_summary_section("walk_forward_evaluation_metrics", _summary_pairs(sequence, "walk_forward_eval")))
+    lines.extend(_summary_section("calibration_diagnostics", _summary_pairs(sequence, "calibration_diagnostics")))
+    lines.extend(_summary_section("betting_simulation_results", _summary_pairs(sequence, "run_backtest")))
+    lines.extend(_summary_section("ablation_results", _summary_pairs(sequence, "run_ablation_experiments")))
+    lines.extend(_build_evaluation_readiness_flags(sequence))
+
+    lines.extend(
+        (
+            "",
+            "Stage outcomes:",
+        )
+    )
+    for record in sequence.records:
+        lines.append(f"- stage: {record.name}")
+        lines.append(f"  description: {record.description}")
+        lines.append(f"  status: {record.status}")
+        lines.append(f"  started_at_utc: {record.started_at_utc}")
+        lines.append(f"  finished_at_utc: {record.finished_at_utc}")
+        lines.append(f"  log_path: {record.log_path.as_posix()}")
+        for key, value in sorted(record.details.items()):
+            lines.append(f"  {key}: {value}")
+
+    lines.extend(
+        (
+            "",
+            "Required summary coverage:",
+            f"- ingestion: {_section_status(sequence.records, 'ingestion')}",
+            f"- data_coverage: {_section_status(sequence.records, 'data_coverage')}",
+            f"- validation: {_section_status(sequence.records, 'validate_data')}",
+            f"- feature_coverage: {_section_status(sequence.records, 'feature_coverage')}",
+            f"- data_coverage_audit: {_section_status(sequence.records, 'data_coverage_audit')}",
+            f"- rating_coverage: {_section_status(sequence.records, 'rating_coverage')}",
+            f"- model_comparison: {_section_status(sequence.records, 'compare_models')}",
+            f"- walk_forward_evaluation: {_section_status(sequence.records, 'walk_forward_eval')}",
+            f"- calibration_diagnostics: {_section_status(sequence.records, 'calibration_diagnostics')}",
+            f"- betting_simulation: {_section_status(sequence.records, 'run_backtest')}",
+            f"- ablation_results: {_section_status(sequence.records, 'run_ablation_experiments')}",
+        )
+    )
+
+    if not sequence.success and sequence.failed_stage_name is not None:
+        lines.append(f"failed_stage: {sequence.failed_stage_name}")
+
+    return "\n".join(lines) + "\n"
+
+
+def _summary_pairs(sequence: StageSequenceResult, stage_name: str) -> dict[str, str]:
+    record = next((item for item in sequence.records if item.name == stage_name), None)
+    if record is None:
+        return {"status": "not_run"}
+    rows = dict(record.details)
+    rows["status"] = record.status
+    return rows
+
+
+def _summary_section(name: str, rows: Mapping[str, str]) -> list[str]:
+    lines = ["", f"{name}:"]
+    for key, value in sorted(rows.items()):
+        lines.append(f"- {key}: {value}")
+    return lines
+
+
+def _build_evaluation_readiness_flags(sequence: StageSequenceResult) -> list[str]:
+    data_rows = _summary_pairs(sequence, "data_coverage")
+    audit_rows = _summary_pairs(sequence, "data_coverage_audit")
+    walk_rows = _summary_pairs(sequence, "walk_forward_eval")
+    backtest_rows = _summary_pairs(sequence, "run_backtest")
+
+    completed_bouts = _as_int(data_rows.get("ufc_completed_bouts_count"))
+    bouts_with_two_stats_rows = _as_int(audit_rows.get("completed_bouts_with_two_stats_rows"))
+    market_rows = _as_int(data_rows.get("ufc_market_rows_count"))
+    fold_count = _as_int(walk_rows.get("folds"))
+    bets_count = _as_int(backtest_rows.get("bets"))
+
+    lines = ["", "evaluation_readiness_flags:"]
+    min_completed_bouts = 200
+    min_market_rows = 200
+    min_folds = 3
+
+    if completed_bouts is None:
+        lines.append("- sample_size_flag: unknown_completed_bout_count")
+    elif completed_bouts < min_completed_bouts:
+        lines.append(
+            f"- sample_size_flag: insufficient (completed_bouts={completed_bouts} recommended_min={min_completed_bouts})"
+        )
+    else:
+        lines.append(f"- sample_size_flag: ok (completed_bouts={completed_bouts})")
+
+    if completed_bouts is None or bouts_with_two_stats_rows is None:
+        lines.append("- bout_stats_coverage_flag: unknown")
+    elif completed_bouts == 0:
+        lines.append("- bout_stats_coverage_flag: no_completed_bouts")
+    else:
+        coverage = bouts_with_two_stats_rows / completed_bouts
+        if coverage < 0.90:
+            lines.append(
+                (
+                    "- bout_stats_coverage_flag: insufficient "
+                    f"(two_stats_rows={bouts_with_two_stats_rows} completed_bouts={completed_bouts} "
+                    f"coverage={coverage:.6f} recommended_min=0.900000)"
+                )
+            )
+        else:
+            lines.append(
+                (
+                    "- bout_stats_coverage_flag: ok "
+                    f"(two_stats_rows={bouts_with_two_stats_rows} completed_bouts={completed_bouts} "
+                    f"coverage={coverage:.6f})"
+                )
+            )
+
+    if fold_count is None:
+        lines.append("- fold_stability_flag: unknown_fold_count")
+    elif fold_count < min_folds:
+        lines.append(f"- fold_stability_flag: insufficient (folds={fold_count} recommended_min={min_folds})")
+    else:
+        lines.append(f"- fold_stability_flag: ok (folds={fold_count})")
+
+    if market_rows is None:
+        lines.append("- market_coverage_flag: unknown_market_rows")
+    elif market_rows < min_market_rows:
+        lines.append(
+            f"- market_coverage_flag: insufficient (market_rows={market_rows} recommended_min={min_market_rows})"
+        )
+    else:
+        lines.append(f"- market_coverage_flag: ok (market_rows={market_rows})")
+
+    if bets_count is None:
+        lines.append("- betting_activity_flag: unknown_bets_count")
+    elif bets_count == 0:
+        lines.append("- betting_activity_flag: no_bets_placed")
+    else:
+        lines.append(f"- betting_activity_flag: ok (bets={bets_count})")
+
+    return lines
+
+
+def _section_status(records: Sequence[StageExecutionRecord], section_hint: str) -> str:
+    matching = [record.status for record in records if section_hint in record.name]
+    if len(matching) == 0:
+        return "not_run"
+    if any(status == "failed" for status in matching):
+        return "failed"
+    if all(status == "ok" for status in matching):
+        return "ok"
+    return "partial"
+
+
+def _collect_ingestion_snapshot(db_path: Path) -> dict[str, str]:
+    counts: dict[str, str] = {}
+    with sqlite3.connect(db_path) as connection:
+        cursor = connection.cursor()
+        for table in ("events", "fighters", "bouts", "fighter_bout_stats", "markets"):
+            row = cursor.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+            counts[f"{table}_count"] = str(int(row[0] if row is not None else 0))
+    return counts
+
+
+def _collect_data_coverage_snapshot(*, db_path: Path, promotion: str) -> dict[str, str]:
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        cursor = connection.cursor()
+        counts = {
+            "events_count": _single_count(cursor, "SELECT COUNT(*) FROM events"),
+            "fighters_count": _single_count(cursor, "SELECT COUNT(*) FROM fighters"),
+            "bouts_count": _single_count(cursor, "SELECT COUNT(*) FROM bouts"),
+            "fighter_bout_stats_count": _single_count(cursor, "SELECT COUNT(*) FROM fighter_bout_stats"),
+            "markets_count": _single_count(cursor, "SELECT COUNT(*) FROM markets"),
+            "model_predictions_count": _single_count(cursor, "SELECT COUNT(*) FROM model_predictions"),
+            "ufc_events_count": _single_count(
+                cursor,
+                "SELECT COUNT(*) FROM events WHERE UPPER(promotion) = UPPER(?)",
+                promotion,
+            ),
+            "ufc_bouts_count": _single_count(
+                cursor,
+                """
+                SELECT COUNT(*)
+                FROM bouts AS b
+                JOIN events AS e ON e.event_id = b.event_id
+                WHERE UPPER(e.promotion) = UPPER(?)
+                """,
+                promotion,
+            ),
+            "ufc_completed_bouts_count": _single_count(
+                cursor,
+                """
+                SELECT COUNT(*)
+                FROM bouts AS b
+                JOIN events AS e ON e.event_id = b.event_id
+                WHERE UPPER(e.promotion) = UPPER(?)
+                  AND b.winner_fighter_id IS NOT NULL
+                """,
+                promotion,
+            ),
+            "ufc_market_rows_count": _single_count(
+                cursor,
+                """
+                SELECT COUNT(*)
+                FROM markets AS m
+                JOIN bouts AS b ON b.bout_id = m.bout_id
+                JOIN events AS e ON e.event_id = b.event_id
+                WHERE UPPER(e.promotion) = UPPER(?)
+                """,
+                promotion,
+            ),
+        }
+
+        date_row = cursor.execute(
+            """
+            SELECT
+                MIN(COALESCE(b.bout_start_time_utc, e.event_date_utc)) AS first_bout_utc,
+                MAX(COALESCE(b.bout_start_time_utc, e.event_date_utc)) AS last_bout_utc
+            FROM bouts AS b
+            JOIN events AS e ON e.event_id = b.event_id
+            WHERE UPPER(e.promotion) = UPPER(?)
+            """,
+            (promotion,),
+        ).fetchone()
+
+    return {
+        **counts,
+        "promotion": promotion,
+        "first_ufc_bout_utc": str(date_row["first_bout_utc"]) if date_row and date_row["first_bout_utc"] else "n/a",
+        "last_ufc_bout_utc": str(date_row["last_bout_utc"]) if date_row and date_row["last_bout_utc"] else "n/a",
+    }
+
+
+def _resolve_walk_forward_window_settings(
+    *,
+    db_path: Path,
+    promotion: str,
+    window_type: str,
+    min_train_bouts: int,
+    test_bouts: int,
+    rolling_train_bouts: int | None,
+) -> dict[str, str]:
+    completed_bouts_available = int(_count_completed_bouts(db_path=db_path, promotion=promotion))
+    if completed_bouts_available < 4:
+        raise ValueError("Need at least 4 completed bouts for walk-forward evaluation.")
+
+    effective_min_train = min_train_bouts
+    if effective_min_train >= completed_bouts_available:
+        effective_min_train = max(1, completed_bouts_available // 2)
+
+    if effective_min_train >= completed_bouts_available:
+        effective_min_train = completed_bouts_available - 1
+    if effective_min_train < 1:
+        raise ValueError("Unable to derive a valid min_train_bouts setting.")
+
+    max_test_bouts = completed_bouts_available - effective_min_train
+    effective_test = min(test_bouts, max_test_bouts)
+    if effective_test < 1:
+        raise ValueError("Unable to derive a valid test_bouts setting.")
+
+    effective_rolling: int | None = rolling_train_bouts
+    if window_type == "rolling":
+        if effective_rolling is None or effective_rolling < 1:
+            effective_rolling = effective_min_train
+        effective_rolling = min(effective_rolling, effective_min_train)
+
+    auto_adjusted = (
+        (effective_min_train != min_train_bouts)
+        or (effective_test != test_bouts)
+        or (window_type == "rolling" and effective_rolling != rolling_train_bouts)
+    )
+
+    return {
+        "completed_bouts_available": str(completed_bouts_available),
+        "configured_min_train_bouts": str(min_train_bouts),
+        "configured_test_bouts": str(test_bouts),
+        "effective_min_train_bouts": str(effective_min_train),
+        "effective_test_bouts": str(effective_test),
+        "effective_rolling_train_bouts": "n/a" if effective_rolling is None else str(effective_rolling),
+        "window_auto_adjusted": "true" if auto_adjusted else "false",
+    }
+
+
+def _count_completed_bouts(*, db_path: Path, promotion: str) -> int:
+    with sqlite3.connect(db_path) as connection:
+        row = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM bouts AS b
+            JOIN events AS e ON e.event_id = b.event_id
+            WHERE UPPER(e.promotion) = UPPER(?)
+              AND b.winner_fighter_id IS NOT NULL
+            """,
+            (promotion,),
+        ).fetchone()
+    return int(row[0] if row is not None else 0)
+
+
+def _single_count(cursor: sqlite3.Cursor, query: str, *params: object) -> str:
+    row = cursor.execute(query, params).fetchone()
+    return str(int(row[0] if row is not None else 0))
+
+
+def _as_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _normalize_details(details: StageDetails | None) -> dict[str, str]:
+    if details is None:
+        return {}
+
+    normalized: dict[str, str] = {}
+    for key, value in details.items():
+        normalized[str(key)] = _to_text(value)
+    return normalized
+
+
+def _to_text(value: Any) -> str:
+    if isinstance(value, float):
+        return f"{value:.8f}"
+    return str(value)
+
+
+def _append_line(path: Path, line: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(line)
+        handle.write("\n")
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+===== tests/test_ufc_stats_parsing.py =====
+"""Tests for deterministic UFC Stats HTML parsing."""
+
+from __future__ import annotations
+
+from ingestion.sources.ufc_stats import parse_completed_events_index, parse_event_page
+
+
+def test_parse_completed_events_index_extracts_event_references() -> None:
+    """Completed events index parser should return deterministic event references."""
+
+    html = """
+    <table>
+      <tr>
+        <td><a href="http://ufcstats.com/event-details/abc123">UFC 300: Test Card</a></td>
+        <td><span class="b-statistics__date">April 13, 2024</span></td>
+      </tr>
+      <tr>
+        <td><a href="http://ufcstats.com/event-details/def456">UFC Fight Night: Example</a></td>
+        <td><span class="b-statistics__date">May 01, 2024</span></td>
+      </tr>
+    </table>
+    """
+
+    refs = parse_completed_events_index(html)
+
+    assert [ref.event_id for ref in refs] == ["abc123", "def456"]
+    assert refs[0].event_name == "UFC 300: Test Card"
+    assert refs[0].event_date_text == "April 13, 2024"
+
+
+def test_parse_event_page_extracts_event_metadata_and_bout_results() -> None:
+    """Event page parser should extract event and bout result fields."""
+
+    html = """
+    <span class="b-content__title-highlight"> UFC 300: Test Card </span>
+    <li class="b-list__box-list-item">Date: April 13, 2024</li>
+    <li class="b-list__box-list-item">Location: Las Vegas, Nevada, USA</li>
+
+    <tr class="b-fight-details__table-row" data-link="http://ufcstats.com/fight-details/fight001">
+      <td>W</td>
+      <td>
+        <a href="http://ufcstats.com/fighter-details/red001">Red Fighter</a>
+        <a href="http://ufcstats.com/fighter-details/blue001">Blue Fighter</a>
+      </td>
+      <td><p>2</p><p>0</p></td>
+      <td><p>25</p><p>8</p></td>
+      <td><p>1</p><p>0</p></td>
+      <td><p>0</p><p>0</p></td>
+      <td></td><td></td>
+      <td>KO/TKO</td>
+      <td>2</td>
+      <td>1:30</td>
+    </tr>
+    """
+
+    parsed = parse_event_page(
+        event_id="abc123",
+        event_url="http://ufcstats.com/event-details/abc123",
+        event_html=html,
+        fallback_event_name=None,
+        fallback_event_date=None,
+    )
+
+    assert parsed["event_id"] == "abc123"
+    assert parsed["event_name"] == "UFC 300: Test Card"
+    assert parsed["event_date_utc"] == "2024-04-13T00:00:00Z"
+    assert parsed["city"] == "Las Vegas"
+    assert parsed["region"] == "Nevada"
+    assert parsed["country"] == "USA"
+
+    fighters = parsed["fighters"]
+    assert isinstance(fighters, list)
+    assert len(fighters) == 2
+
+    bouts = parsed["bouts"]
+    assert isinstance(bouts, list)
+    assert len(bouts) == 1
+
+    bout = bouts[0]
+    assert bout["bout_id"] == "fight001"
+    assert bout["fighter_red_id"] == "red001"
+    assert bout["fighter_blue_id"] == "blue001"
+    assert bout["winner_fighter_id"] == "red001"
+    assert bout["result_method"] == "KO/TKO"
+    assert bout["result_round"] == 2
+    assert bout["result_time"] == "1:30"
+    event_row_stats = bout["event_row_fighter_bout_stats"]
+    assert isinstance(event_row_stats, tuple)
+    assert event_row_stats[0]["fighter_id"] == "red001"
+    assert event_row_stats[0]["knockdowns"] == 2
+    assert event_row_stats[0]["sig_strikes_landed"] == 25
+    assert event_row_stats[0]["takedowns_landed"] == 1
+    assert event_row_stats[0]["submission_attempts"] == 0
+    assert event_row_stats[1]["fighter_id"] == "blue001"
+    assert event_row_stats[1]["knockdowns"] == 0
+    assert event_row_stats[1]["sig_strikes_landed"] == 8
+
+
+def test_parse_event_page_extracts_date_from_icon_label_markup() -> None:
+    html = """
+    <span class="b-content__title-highlight"> UFC Icon Label Card </span>
+    <li class="b-list__box-list-item"><i class="b-list__box-item-title">Date:</i> April 13, 2024</li>
+    <li class="b-list__box-list-item"><i class="b-list__box-item-title">Location:</i> Las Vegas, Nevada, USA</li>
+    """
+
+    parsed = parse_event_page(
+        event_id="abc123",
+        event_url="http://ufcstats.com/event-details/abc123",
+        event_html=html,
+        fallback_event_name=None,
+        fallback_event_date=None,
+    )
+
+    assert parsed["event_date_utc"] == "2024-04-13T00:00:00Z"
+    assert parsed["city"] == "Las Vegas"
+
+===== tests/test_ufc_stats_bout_stats_parsing.py =====
+"""Tests for UFC Stats fight-details parsing into fighter-bout stats."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from ingestion.contracts import RawIngestionRecord
+from ingestion.sources.ufc_stats import UFCStatsBoutStatsParser, parse_fight_details_page
+
+
+def test_parse_fight_details_page_maps_red_and_blue_stats() -> None:
+    """Parser should map stats values by fighter row order and parse safely."""
+
+    html = """
+    <table class="b-fight-details__table">
+      <thead>
+        <tr>
+          <th>Round</th>
+          <th>Fighter</th>
+          <th>KD</th>
+          <th>SIG. STR.</th>
+          <th>SIG. STR. %</th>
+          <th>TOTAL STR.</th>
+          <th>TD</th>
+          <th>TD %</th>
+          <th>SUB. ATT</th>
+          <th>REV.</th>
+          <th>CTRL</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="b-fight-details__table-row">
+          <td><p>Total</p><p>Total</p></td>
+          <td><p>Red Fighter</p><p>Blue Fighter</p></td>
+          <td><p>1</p><p>0</p></td>
+          <td><p>10 of 20</p><p>15 of 30</p></td>
+          <td><p>50%</p><p>50%</p></td>
+          <td><p>20 of 40</p><p>30 of 60</p></td>
+          <td><p>2 of 5</p><p>1 of 4</p></td>
+          <td><p>40%</p><p>25%</p></td>
+          <td><p>1</p><p>0</p></td>
+          <td><p>0</p><p>2</p></td>
+          <td><p>3:12</p><p>--</p></td>
+        </tr>
+      </tbody>
+    </table>
+    """
+
+    parsed = parse_fight_details_page(
+        bout_id="bout001",
+        fight_url="http://ufcstats.com/fight-details/bout001",
+        fight_html=html,
+        fighter_red_id="red001",
+        fighter_blue_id="blue001",
+    )
+
+    rows = parsed["fighter_bout_stats"]
+    assert isinstance(rows, tuple)
+    assert len(rows) == 2
+
+    red = rows[0]
+    blue = rows[1]
+
+    assert red["fighter_id"] == "red001"
+    assert red["opponent_fighter_id"] == "blue001"
+    assert red["corner"] == "red"
+    assert red["knockdowns"] == 1
+    assert red["sig_strikes_landed"] == 10
+    assert red["sig_strikes_attempted"] == 20
+    assert red["total_strikes_landed"] == 20
+    assert red["total_strikes_attempted"] == 40
+    assert red["takedowns_landed"] == 2
+    assert red["takedowns_attempted"] == 5
+    assert red["submission_attempts"] == 1
+    assert red["reversals"] == 0
+    assert red["control_time_seconds"] == 192
+
+    assert blue["fighter_id"] == "blue001"
+    assert blue["opponent_fighter_id"] == "red001"
+    assert blue["corner"] == "blue"
+    assert blue["knockdowns"] == 0
+    assert blue["sig_strikes_landed"] == 15
+    assert blue["sig_strikes_attempted"] == 30
+    assert blue["total_strikes_landed"] == 30
+    assert blue["total_strikes_attempted"] == 60
+    assert blue["takedowns_landed"] == 1
+    assert blue["takedowns_attempted"] == 4
+    assert blue["submission_attempts"] == 0
+    assert blue["reversals"] == 2
+    assert blue["control_time_seconds"] is None
+
+
+def test_bout_stats_parser_uses_event_row_fallback_when_fight_html_missing() -> None:
+    parser = UFCStatsBoutStatsParser()
+    raw_record = RawIngestionRecord(
+        source_system="ufc_stats",
+        source_record_id="fight_page:bout001",
+        fetched_at_utc=datetime.now(timezone.utc),
+        payload={
+            "event_id": "event001",
+            "event_url": "http://ufcstats.com/event-details/event001",
+            "event_name": "UFC Test Night",
+            "event_date_utc": "2024-01-20T00:00:00Z",
+            "bout_id": "bout001",
+            "fight_url": "http://ufcstats.com/fight-details/bout001",
+            "fighter_red_id": "red001",
+            "fighter_red_name": "Red Fighter",
+            "fighter_blue_id": "blue001",
+            "fighter_blue_name": "Blue Fighter",
+            "winner_fighter_id": "red001",
+            "result_method": "Decision",
+            "result_round": 3,
+            "result_time": "5:00",
+            "scheduled_rounds": 3,
+            "weight_class": "Lightweight",
+            "html": None,
+            "event_row_fighter_bout_stats": (
+                {
+                    "fighter_id": "red001",
+                    "opponent_fighter_id": "blue001",
+                    "corner": "red",
+                    "knockdowns": 1,
+                    "sig_strikes_landed": 45,
+                    "takedowns_landed": 2,
+                    "submission_attempts": 1,
+                },
+                {
+                    "fighter_id": "blue001",
+                    "opponent_fighter_id": "red001",
+                    "corner": "blue",
+                    "knockdowns": 0,
+                    "sig_strikes_landed": 40,
+                    "takedowns_landed": 1,
+                    "submission_attempts": 0,
+                },
+            ),
+        },
+        payload_sha256="sha",
+        idempotency_key="idem",
+    )
+
+    parsed_records = parser.parse((raw_record,))
+    assert len(parsed_records) == 1
+    parsed = parsed_records[0].parsed_payload
+    rows = parsed["fighter_bout_stats"]
+    assert len(rows) == 2
+    assert rows[0]["fighter_id"] == "red001"
+    assert rows[0]["knockdowns"] == 1
+    assert rows[0]["sig_strikes_landed"] == 45
+    assert rows[0]["sig_strikes_attempted"] is None
+    assert rows[1]["fighter_id"] == "blue001"
+    assert rows[1]["takedowns_landed"] == 1
+
+===== tests/test_ufc_stats_bout_stats_persistence.py =====
+"""Tests for UFC Stats fighter-bout stats idempotent persistence behavior."""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from ingestion.contracts import ParsedIngestionRecord
+from ingestion.sources.ufc_stats import UFCStatsBoutStatsNormalizer, UFCStatsPersister
+
+
+def _parsed_record(*, red_kd: int, red_ctrl_seconds: int) -> ParsedIngestionRecord:
+    parsed_payload = {
+        "event_id": "event001",
+        "event_url": "http://ufcstats.com/event-details/event001",
+        "event_name": "UFC Test Night",
+        "event_date_utc": "2024-01-20T00:00:00Z",
+        "venue": None,
+        "city": "Las Vegas",
+        "region": "Nevada",
+        "country": "USA",
+        "fighters": [
+            {"fighter_id": "red001", "full_name": "Red Fighter"},
+            {"fighter_id": "blue001", "full_name": "Blue Fighter"},
+        ],
+        "bout": {
+            "bout_id": "bout001",
+            "fight_url": "http://ufcstats.com/fight-details/bout001",
+            "bout_order": 1,
+            "fighter_red_id": "red001",
+            "fighter_blue_id": "blue001",
+            "winner_fighter_id": "red001",
+            "result_method": "Decision",
+            "result_round": 3,
+            "result_time": "5:00",
+            "scheduled_rounds": 3,
+            "weight_class": "Lightweight",
+        },
+        "fighter_bout_stats": [
+            {
+                "fighter_id": "red001",
+                "opponent_fighter_id": "blue001",
+                "corner": "red",
+                "knockdowns": red_kd,
+                "sig_strikes_landed": 45,
+                "sig_strikes_attempted": 98,
+                "total_strikes_landed": 80,
+                "total_strikes_attempted": 160,
+                "takedowns_landed": 2,
+                "takedowns_attempted": 5,
+                "submission_attempts": 1,
+                "reversals": 0,
+                "control_time_seconds": red_ctrl_seconds,
+            },
+            {
+                "fighter_id": "blue001",
+                "opponent_fighter_id": "red001",
+                "corner": "blue",
+                "knockdowns": 0,
+                "sig_strikes_landed": 40,
+                "sig_strikes_attempted": 90,
+                "total_strikes_landed": 70,
+                "total_strikes_attempted": 150,
+                "takedowns_landed": 1,
+                "takedowns_attempted": 4,
+                "submission_attempts": 0,
+                "reversals": 1,
+                "control_time_seconds": 120,
+            },
+        ],
+    }
+    return ParsedIngestionRecord(
+        source_system="ufc_stats",
+        source_record_id="fight_page:bout001",
+        parsed_payload=parsed_payload,
+        payload_sha256=f"payloadsha_{red_kd}_{red_ctrl_seconds}",
+        idempotency_key=f"idem_{red_kd}_{red_ctrl_seconds}",
+    )
+
+
+def test_fighter_bout_stats_persistence_is_idempotent_and_upserts_updates(tmp_path: Path) -> None:
+    """Second identical write should skip, changed fighter_bout_stats should update."""
+
+    db_path = tmp_path / "mma.sqlite3"
+    persister = UFCStatsPersister(db_path=db_path)
+    normalizer = UFCStatsBoutStatsNormalizer()
+
+    rows_v1 = normalizer.normalize((_parsed_record(red_kd=1, red_ctrl_seconds=240),))
+    first = persister.persist(rows_v1)
+    second = persister.persist(rows_v1)
+
+    rows_v2 = normalizer.normalize((_parsed_record(red_kd=2, red_ctrl_seconds=300),))
+    third = persister.persist(rows_v2)
+
+    assert first.inserted_count == len(rows_v1)
+    assert first.updated_count == 0
+    assert first.skipped_count == 0
+
+    assert second.inserted_count == 0
+    assert second.updated_count == 0
+    assert second.skipped_count == len(rows_v1)
+
+    assert third.inserted_count == 0
+    assert third.updated_count >= 1
+    assert third.skipped_count >= 1
+
+    with sqlite3.connect(db_path) as connection:
+        count = connection.execute("SELECT COUNT(*) FROM fighter_bout_stats;").fetchone()[0]
+        red_row = connection.execute(
+            "SELECT knockdowns, control_time_seconds FROM fighter_bout_stats "
+            "WHERE bout_id = ? AND fighter_id = ?",
+            ("bout001", "red001"),
+        ).fetchone()
+
+    assert count == 2
+    assert red_row == (2, 300)
+
+
+def test_fighter_bout_stats_persistence_updates_from_event_fallback_shape(tmp_path: Path) -> None:
+    db_path = tmp_path / "mma.sqlite3"
+    persister = UFCStatsPersister(db_path=db_path)
+    normalizer = UFCStatsBoutStatsNormalizer()
+
+    fallback_rows = normalizer.normalize(
+        (
+            ParsedIngestionRecord(
+                source_system="ufc_stats",
+                source_record_id="fight_page:bout001",
+                parsed_payload={
+                    "event_id": "event001",
+                    "event_url": "http://ufcstats.com/event-details/event001",
+                    "event_name": "UFC Test Night",
+                    "event_date_utc": "2024-01-20T00:00:00Z",
+                    "venue": None,
+                    "city": "Las Vegas",
+                    "region": "Nevada",
+                    "country": "USA",
+                    "fighters": [
+                        {"fighter_id": "red001", "full_name": "Red Fighter"},
+                        {"fighter_id": "blue001", "full_name": "Blue Fighter"},
+                    ],
+                    "bout": {
+                        "bout_id": "bout001",
+                        "fight_url": "http://ufcstats.com/fight-details/bout001",
+                        "bout_order": 1,
+                        "fighter_red_id": "red001",
+                        "fighter_blue_id": "blue001",
+                        "winner_fighter_id": "red001",
+                        "result_method": "Decision",
+                        "result_round": 3,
+                        "result_time": "5:00",
+                        "scheduled_rounds": 3,
+                        "weight_class": "Lightweight",
+                        "stats_source_type": "event_details_fallback",
+                    },
+                    "fighter_bout_stats": [
+                        {
+                            "fighter_id": "red001",
+                            "opponent_fighter_id": "blue001",
+                            "corner": "red",
+                            "knockdowns": 1,
+                            "sig_strikes_landed": 30,
+                            "sig_strikes_attempted": None,
+                            "total_strikes_landed": None,
+                            "total_strikes_attempted": None,
+                            "takedowns_landed": 2,
+                            "takedowns_attempted": None,
+                            "submission_attempts": 1,
+                            "reversals": None,
+                            "control_time_seconds": None,
+                        },
+                        {
+                            "fighter_id": "blue001",
+                            "opponent_fighter_id": "red001",
+                            "corner": "blue",
+                            "knockdowns": 0,
+                            "sig_strikes_landed": 20,
+                            "sig_strikes_attempted": None,
+                            "total_strikes_landed": None,
+                            "total_strikes_attempted": None,
+                            "takedowns_landed": 1,
+                            "takedowns_attempted": None,
+                            "submission_attempts": 0,
+                            "reversals": None,
+                            "control_time_seconds": None,
+                        },
+                    ],
+                },
+                payload_sha256="fallback_sha",
+                idempotency_key="fallback_idem",
+            ),
+        )
+    )
+    full_rows = normalizer.normalize((_parsed_record(red_kd=2, red_ctrl_seconds=300),))
+
+    first = persister.persist(fallback_rows)
+    second = persister.persist(full_rows)
+
+    assert first.inserted_count == len(fallback_rows)
+    assert second.updated_count >= 1
+
+    with sqlite3.connect(db_path) as connection:
+        red_row = connection.execute(
+            """
+            SELECT sig_strikes_attempted, total_strikes_landed, total_strikes_attempted, takedowns_attempted, control_time_seconds
+            FROM fighter_bout_stats
+            WHERE bout_id = ? AND fighter_id = ?
+            """,
+            ("bout001", "red001"),
+        ).fetchone()
+    assert red_row == (98, 80, 160, 5, 300)
+
+===== tests/test_ufc_stats_archive_replay_ingestion.py =====
+"""Tests for archive-replay UFC Stats ingestion paths."""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from ingestion.db_init import initialize_sqlite_database
+from ingestion.sources.ufc_stats import (
+    run_ufc_stats_bout_stats_ingestion_from_archives,
+    run_ufc_stats_events_ingestion_from_archives,
+)
+
+
+def test_events_archive_replay_prefers_latest_file_per_event_id(tmp_path: Path) -> None:
+    db_path = tmp_path / "mma.sqlite3"
+    raw_root = tmp_path / "raw"
+    initialize_sqlite_database(db_path)
+
+    source_dir = raw_root / "ufc_stats" / "2026" / "03" / "11"
+    source_dir.mkdir(parents=True, exist_ok=True)
+
+    old_html = """
+    <span class="b-content__title-highlight"> UFC Old Name </span>
+    <li class="b-list__box-list-item">Date: March 01, 2024</li>
+    <li class="b-list__box-list-item">Location: Las Vegas, Nevada, USA</li>
+    """
+    new_html = """
+    <span class="b-content__title-highlight"> UFC New Name </span>
+    <li class="b-list__box-list-item">Date: March 01, 2024</li>
+    <li class="b-list__box-list-item">Location: Las Vegas, Nevada, USA</li>
+    """
+    second_html = """
+    <span class="b-content__title-highlight"> UFC Another Event </span>
+    <li class="b-list__box-list-item">Date: April 01, 2024</li>
+    <li class="b-list__box-list-item">Location: Miami, Florida, USA</li>
+    """
+
+    (source_dir / "010000_http_ufcstats_com_event_details_abc123_aaaa.html").write_text(old_html, encoding="utf-8")
+    (source_dir / "020000_http_ufcstats_com_event_details_abc123_bbbb.html").write_text(new_html, encoding="utf-8")
+    (source_dir / "030000_http_ufcstats_com_event_details_def456_cccc.html").write_text(second_html, encoding="utf-8")
+
+    result = run_ufc_stats_events_ingestion_from_archives(db_path=db_path, raw_root=raw_root)
+    assert result.inserted_count >= 2
+
+    with sqlite3.connect(db_path) as connection:
+        names = {
+            row[0]: row[1]
+            for row in connection.execute("SELECT event_id, event_name FROM events ORDER BY event_id")
+        }
+
+    assert names["abc123"] == "UFC New Name"
+    assert names["def456"] == "UFC Another Event"
+
+
+def test_bout_stats_archive_replay_uses_event_fallback_when_fight_page_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / "mma.sqlite3"
+    raw_root = tmp_path / "raw"
+    initialize_sqlite_database(db_path)
+
+    source_dir = raw_root / "ufc_stats" / "2026" / "03" / "11"
+    source_dir.mkdir(parents=True, exist_ok=True)
+
+    event_html = """
+    <span class="b-content__title-highlight"> UFC Test Card </span>
+    <li class="b-list__box-list-item">Date: April 13, 2024</li>
+    <li class="b-list__box-list-item">Location: Las Vegas, Nevada, USA</li>
+
+    <tr class="b-fight-details__table-row" data-link="http://ufcstats.com/fight-details/fight001">
+      <td>W</td>
+      <td>
+        <a href="http://ufcstats.com/fighter-details/red001">Red Fighter</a>
+        <a href="http://ufcstats.com/fighter-details/blue001">Blue Fighter</a>
+      </td>
+      <td><p>1</p><p>0</p></td>
+      <td><p>30</p><p>10</p></td>
+      <td><p>2</p><p>1</p></td>
+      <td><p>0</p><p>0</p></td>
+      <td>Lightweight</td>
+      <td>Decision</td>
+      <td>3</td>
+      <td>5:00</td>
+    </tr>
+    """
+    (source_dir / "010000_http_ufcstats_com_event_details_abc123_aaaa.html").write_text(event_html, encoding="utf-8")
+
+    run_ufc_stats_events_ingestion_from_archives(db_path=db_path, raw_root=raw_root)
+    result = run_ufc_stats_bout_stats_ingestion_from_archives(db_path=db_path, raw_root=raw_root)
+    assert result.inserted_count >= 1
+
+    with sqlite3.connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT fighter_id, opponent_fighter_id, corner, knockdowns, sig_strikes_landed, takedowns_landed
+            FROM fighter_bout_stats
+            ORDER BY fighter_id
+            """
+        ).fetchall()
+
+    assert rows == [
+        ("blue001", "red001", "blue", 0, 10, 1),
+        ("red001", "blue001", "red", 1, 30, 2),
+    ]
+
+===== tests/test_data_coverage_audit.py =====
+"""Tests for data coverage audit report generation."""
+
+from __future__ import annotations
+
+import sqlite3
+from pathlib import Path
+
+from ingestion.db_init import initialize_sqlite_database
+from validation import run_data_coverage_audit
+
+
+def test_data_coverage_audit_writes_missingness_reasons(tmp_path: Path) -> None:
+    db_path = tmp_path / "mma.sqlite3"
+    features_path = tmp_path / "features.csv"
+    report_path = tmp_path / "coverage_audit.txt"
+    initialize_sqlite_database(db_path)
+
+    now = "2026-03-11T00:00:00Z"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            INSERT INTO fighters (
+                fighter_id, full_name, date_of_birth_utc, nationality, stance, height_cm, reach_cm,
+                source_system, source_record_id, source_updated_at_utc, source_payload_sha256,
+                ingested_at_utc, created_at_utc, updated_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("f1", "Fighter One", None, None, None, None, None, "ufc_stats", "fighter:f1", None, "sha1", now, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO fighters (
+                fighter_id, full_name, date_of_birth_utc, nationality, stance, height_cm, reach_cm,
+                source_system, source_record_id, source_updated_at_utc, source_payload_sha256,
+                ingested_at_utc, created_at_utc, updated_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("f2", "Fighter Two", "1990-01-01T00:00:00Z", None, None, 180.0, 182.0, "ufc_stats", "fighter:f2", None, "sha2", now, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO events (
+                event_id, promotion, event_name, event_date_utc, venue, city, region, country, timezone_name,
+                source_system, source_record_id, source_updated_at_utc, source_payload_sha256,
+                ingested_at_utc, created_at_utc, updated_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("e1", "UFC", "UFC Test", "2024-01-01T00:00:00Z", None, None, None, None, None, "ufc_stats", "event:e1", None, "shae1", now, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO bouts (
+                bout_id, event_id, bout_order, fighter_red_id, fighter_blue_id, weight_class, gender,
+                is_title_fight, scheduled_rounds, bout_start_time_utc, result_method, result_round,
+                result_time_seconds, winner_fighter_id, source_system, source_record_id, source_updated_at_utc,
+                source_payload_sha256, ingested_at_utc, created_at_utc, updated_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("b1", "e1", 1, "f1", "f2", "Lightweight", "M", 0, 3, "2024-01-01T01:00:00Z", "Decision", 3, 300, "f2", "ufc_stats", "bout:b1", None, "shab1", now, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO fighter_bout_stats (
+                fighter_bout_stats_id, bout_id, fighter_id, opponent_fighter_id, corner,
+                knockdowns, sig_strikes_landed, sig_strikes_attempted, total_strikes_landed,
+                total_strikes_attempted, takedowns_landed, takedowns_attempted, submission_attempts,
+                reversals, control_time_seconds, source_system, source_record_id, source_updated_at_utc,
+                source_payload_sha256, ingested_at_utc, created_at_utc, updated_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "b1:f1",
+                "b1",
+                "f1",
+                "f2",
+                "red",
+                1,
+                10,
+                None,
+                None,
+                None,
+                1,
+                None,
+                0,
+                None,
+                None,
+                "ufc_stats",
+                "fighter_bout_stats:b1:f1",
+                None,
+                "sha_stat_1",
+                now,
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO fighter_bout_stats (
+                fighter_bout_stats_id, bout_id, fighter_id, opponent_fighter_id, corner,
+                knockdowns, sig_strikes_landed, sig_strikes_attempted, total_strikes_landed,
+                total_strikes_attempted, takedowns_landed, takedowns_attempted, submission_attempts,
+                reversals, control_time_seconds, source_system, source_record_id, source_updated_at_utc,
+                source_payload_sha256, ingested_at_utc, created_at_utc, updated_at_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "b1:f2",
+                "b1",
+                "f2",
+                "f1",
+                "blue",
+                0,
+                8,
+                None,
+                None,
+                None,
+                0,
+                None,
+                0,
+                None,
+                None,
+                "ufc_stats",
+                "fighter_bout_stats:b1:f2",
+                None,
+                "sha_stat_2",
+                now,
+                now,
+                now,
+            ),
+        )
+        connection.commit()
+
+    features_path.write_text(
+        (
+            "bout_id,event_id,bout_order,bout_datetime_utc,fighter_id,opponent_id,corner,weight_class,"
+            "fighter_age_years,height_diff_cm,reach_diff_cm,stance_matchup,days_since_last_fight,prior_fight_count,"
+            "recent_form_win_rate_l3,recent_form_win_rate_l5,opponent_strength_avg_l3,opponent_strength_avg_l5,"
+            "finish_rate_all,decision_rate_all,sig_strikes_landed_per_min_all,sig_striking_accuracy_all,"
+            "sig_striking_defense_all,takedown_attempts_per_15m_all,takedown_accuracy_all,takedown_defense_all,"
+            "submission_attempts_per_15m_all,avg_fight_duration_seconds_all,rematch_flag,weight_class_experience\n"
+            "b1,e1,1,2024-01-01T01:00:00Z,f1,f2,red,Lightweight,,,,,,"  # age/height/reach/days/prior missing
+            "0,,,,,,,,,,,,,,,\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_data_coverage_audit(
+        db_path=db_path,
+        promotion="UFC",
+        features_path=features_path,
+        report_output_path=report_path,
+    )
+
+    assert result.total_events == 1
+    assert result.total_completed_bouts == 1
+    assert result.total_fighters == 2
+    assert result.completed_bouts_with_two_stats_rows == 1
+    assert result.completed_bouts_with_one_stats_row == 0
+    assert result.completed_bouts_with_zero_stats_rows == 0
+    text = report_path.read_text(encoding="utf-8")
+    assert "bout_stats_coverage_totals" in text
+    assert "bouts_with_two_stats_rows=1" in text
+    assert "bout_stats_coverage_by_year" in text
+    assert "year=2024 completed_bouts=1 bouts_with_two_stats_rows=1 bouts_with_one_stats_row=0 bouts_with_zero_stats_rows=0" in text
+    assert "bout_stats_parser_path_proxy" in text
+    assert "rows_with_event_details_fallback_shape=2" in text
+    assert "feature=fighter_age_years reason=missing_fighter_dob count=1" in text
+    assert "feature=height_diff_cm reason=missing_height_metadata count=1" in text
+    assert "feature=reach_diff_cm reason=missing_reach_metadata count=1" in text
+    assert "join_matching_failures" in text
+
+===== tests/test_research_summary_report.py =====
+"""Tests for consolidated research summary/report generation."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from orchestration.workflow import (
+    StageExecutionRecord,
+    StageSequenceResult,
+    build_consolidated_research_summary_text,
+)
+
+
+def _record(
+    *,
+    name: str,
+    status: str = "ok",
+    details: dict[str, str] | None = None,
+) -> StageExecutionRecord:
+    return StageExecutionRecord(
+        name=name,
+        description=f"stage {name}",
+        status=status,
+        started_at_utc="2024-01-01T00:00:00Z",
+        finished_at_utc="2024-01-01T00:01:00Z",
+        log_path=Path(f"/tmp/{name}.log"),
+        details=details or {},
+    )
+
+
+def test_consolidated_summary_contains_all_required_sections() -> None:
+    sequence = StageSequenceResult(
+        success=True,
+        failed_stage_name=None,
+        records=(
+            _record(
+                name="data_coverage",
+                details={
+                    "ufc_bouts_count": "100",
+                    "ufc_completed_bouts_count": "100",
+                    "first_ufc_bout_utc": "2020-01-01T00:00:00Z",
+                },
+            ),
+            _record(
+                name="data_coverage_audit",
+                details={
+                    "report_path": "/tmp/audit.txt",
+                    "total_completed_bouts": "100",
+                    "completed_bouts_with_two_stats_rows": "95",
+                },
+            ),
+            _record(name="validate_data", details={"issues": "0"}),
+            _record(name="feature_coverage", details={"avg_key_feature_coverage": "0.90000000"}),
+            _record(name="rating_coverage", details={"coverage_rate": "0.85000000"}),
+            _record(name="walk_forward_eval", details={"log_loss": "0.64000000", "folds": "3"}),
+            _record(name="calibration_diagnostics", details={"ece": "0.03000000"}),
+            _record(name="run_backtest", details={"roi": "0.12000000", "bets": "42"}),
+            _record(name="run_ablation_experiments", details={"best_scenario": "features_elo_market_with_interactions"}),
+            _record(name="compare_models", details={"champion": "elo_logistic:run_001"}),
+        ),
+    )
+
+    text = build_consolidated_research_summary_text(sequence=sequence, run_ingestion=False)
+
+    assert "Consolidated research summary:" in text
+    assert "data_coverage:" in text
+    assert "data_coverage_audit:" in text
+    assert "validation_results:" in text
+    assert "feature_coverage:" in text
+    assert "rating_coverage:" in text
+    assert "model_comparison:" in text
+    assert "walk_forward_evaluation_metrics:" in text
+    assert "calibration_diagnostics:" in text
+    assert "betting_simulation_results:" in text
+    assert "ablation_results:" in text
+    assert "- champion: elo_logistic:run_001" in text
+    assert "- best_scenario: features_elo_market_with_interactions" in text
+    assert "- roi: 0.12000000" in text
+    assert "evaluation_readiness_flags:" in text
+    assert "bout_stats_coverage_flag: ok" in text
+
+
+def test_consolidated_summary_marks_missing_sections_not_run_and_failed_stage() -> None:
+    sequence = StageSequenceResult(
+        success=False,
+        failed_stage_name="walk_forward_eval",
+        records=(
+            _record(name="validate_data", details={"issues": "0"}),
+            _record(name="walk_forward_eval", status="failed", details={"error_message": "no folds"}),
+        ),
+    )
+
+    text = build_consolidated_research_summary_text(sequence=sequence, run_ingestion=True)
+
+    assert "status: failed" in text
+    assert "ingestion_mode: live" in text
+    assert "data_coverage:" in text
+    assert "- status: not_run" in text
+    assert "sample_size_flag: unknown_completed_bout_count" in text
+    assert "failed_stage: walk_forward_eval" in text
+

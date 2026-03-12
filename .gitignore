@@ -1,0 +1,3 @@
+data/processed/*.db
+data/raw/
+data/processed/reports/

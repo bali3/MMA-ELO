@@ -1,0 +1,32 @@
+calibration_diagnostics_report
+model_name=elo_logistic
+model_run_id=walk_forward_2026-03-12T22:26:33Z
+promotion=UFC
+prediction_filtering
+predictions_loaded=3248
+predictions_used=3248
+dropped_missing_metadata=0
+dropped_chronology_invalid=0
+dropped_invalid_label=0
+dropped_missing_probability=0
+aggregate_calibration_metrics
+log_loss=0.67923363
+brier_score=0.24314469
+hit_rate=0.57081281
+ece=0.01431683
+mce=0.01947395
+calibration_quality=strong
+artifact_paths
+calibration_table=data/processed/reports/calibration_diagnostics/calibration_table.csv
+reliability_curve=data/processed/reports/calibration_diagnostics/reliability_curve.csv
+probability_bucket_summary=data/processed/reports/calibration_diagnostics/probability_bucket_summary.csv
+performance_breakdowns=data/processed/reports/calibration_diagnostics/performance_breakdowns.csv
+worst_bins_by_abs_error
+bin=4 range=[0.40,0.50) count=1145 avg_pred=0.45964862 observed=0.44017467 abs_error=0.01947395
+bin=5 range=[0.50,0.60) count=1481 avg_pred=0.53119671 observed=0.54625253 abs_error=0.01505582
+bin=2 range=[0.20,0.30) count=34 avg_pred=0.27225152 observed=0.26470588 abs_error=0.00754564
+performance_breakdown_highlights
+segment=favourite_status value=favourite count=1456 hit_rate=0.57898352 log_loss=0.67762822 brier=0.24235369 ece=0.01596877
+segment=favourite_status value=pickem count=336 hit_rate=0.50000000 log_loss=0.69314718 brier=0.25000000 ece=0.00000000
+segment=favourite_status value=underdog count=1456 hit_rate=0.57898352 log_loss=0.67762822 brier=0.24235369 ece=0.01596877
+segment=weight_class value=UNKNOWN count=3248 hit_rate=0.57081281 log_loss=0.67923363 brier=0.24314469 ece=0.01431683
